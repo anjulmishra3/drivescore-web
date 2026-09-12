@@ -30,7 +30,7 @@ export default function OnboardingPage() {
         <Step
           n={4}
           title="Record trips"
-          body="Use Quick trip for short errands. Keep the screen on and this tab open — phone browsers suspend background tabs, so longer commutes with the screen off will come in a native app later."
+          body="Use Record trip to capture a drive at 25 Hz — it streams every point to the cloud as you go, with on-device backup so nothing is lost to a dropped signal. Keep the screen on and this tab in front; screen-off background recording will come in a native app later."
         />
       </section>
 

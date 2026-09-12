@@ -73,8 +73,8 @@ export default async function DashboardPage() {
             demo data to explore the dashboard.
           </p>
           <div className="mt-5 flex flex-col gap-2">
-            <Link href="/calibrate" className="btn-primary">Start calibration drive</Link>
-            <Link href="/trip" className="btn-ghost">Record a quick trip</Link>
+            <Link href="/record" className="btn-primary">Record a trip</Link>
+            <Link href="/calibrate" className="btn-ghost">Start calibration drive</Link>
             <SeedButton />
           </div>
         </div>
@@ -88,7 +88,7 @@ export default async function DashboardPage() {
         <h1 className="text-2xl font-bold">Dashboard</h1>
         <div className="flex gap-2">
           <Link href="/calibrate" className="btn-ghost">Calibrate</Link>
-          <Link href="/trip" className="btn-primary">Quick trip</Link>
+          <Link href="/record" className="btn-primary">Record trip</Link>
         </div>
       </div>
 

@@ -36,7 +36,6 @@ export async function middleware(request: NextRequest) {
     path.startsWith("/dashboard") ||
     path.startsWith("/calibrate") ||
     path.startsWith("/record") ||
-    path.startsWith("/trip") ||
     path.startsWith("/settings") ||
     path.startsWith("/onboarding");
 
