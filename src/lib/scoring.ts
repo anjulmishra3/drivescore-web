@@ -62,6 +62,18 @@ export function scoreTrip(samples: TripSample[]): ScoreBreakdown {
   let speedSamples = 0;
   let events = 0;
 
+  // Gravity is removed with a slow per-axis exponential moving average: the
+  // steady tilt of a mounted phone converges into (gx,gy,gz), and subtracting
+  // it leaves the *dynamic* (linear) acceleration. Without this, a tilted mount
+  // reads its constant gravity component as permanent "hard cornering".
+  let gx: number | null = null, gy = 0, gz = 0;
+  const GRAV_ALPHA = 0.02; // ~ how fast the gravity estimate tracks tilt changes
+
+  // Only judge driving events while actually moving — GPS speed jitters at a
+  // standstill and would otherwise fabricate harsh accel/brake events.
+  const MOVING_KMH = 4;
+  const CORNER_MIN_KMH = 8;
+
   for (let i = 1; i < sorted.length; i++) {
     const prev = sorted[i - 1];
     const cur = sorted[i];
@@ -69,30 +81,40 @@ export function scoreTrip(samples: TripSample[]): ScoreBreakdown {
     if (dt <= 0) continue;
 
     distanceKm += haversineKm(prev, cur);
+    const moving = (cur.speed_kmh ?? 0) >= MOVING_KMH;
 
-    // longitudinal acceleration from GPS speed (km/h -> m/s)
+    // longitudinal acceleration from GPS speed (km/h -> m/s), while moving
     if (cur.speed_kmh != null && prev.speed_kmh != null) {
-      const dv = ((cur.speed_kmh - prev.speed_kmh) * 1000) / 3600;
-      const aLong = dv / dt / G; // in g
-      if (aLong > HARSH_ACCEL_G) { harshAccel++; events++; }
-      if (-aLong > HARSH_BRAKE_G) { harshBrake++; events++; }
-
       maxSpeed = Math.max(maxSpeed, cur.speed_kmh);
-      speedSamples++;
-      if (cur.speed_kmh > SPEED_LIMIT_KMH) speedingSamples++;
+      if (moving) {
+        const dv = ((cur.speed_kmh - prev.speed_kmh) * 1000) / 3600;
+        const aLong = dv / dt / G; // in g
+        if (aLong > HARSH_ACCEL_G) { harshAccel++; events++; }
+        if (-aLong > HARSH_BRAKE_G) { harshBrake++; events++; }
+        speedSamples++;
+        if (cur.speed_kmh > SPEED_LIMIT_KMH) speedingSamples++;
+      }
     }
 
-    // lateral / cornering from device accelerometer (x/y in m/s^2)
-    if (cur.accel_x != null && cur.accel_y != null) {
-      const lat = Math.sqrt(cur.accel_x ** 2 + cur.accel_y ** 2) / G;
-      if (lat > HARSH_CORNER_G) { harshCorner++; events++; }
+    // cornering from gravity-removed device acceleration, only while moving fast
+    // enough for a turn to be meaningful
+    if (cur.accel_x != null && cur.accel_y != null && cur.accel_z != null) {
+      if (gx == null) { gx = cur.accel_x; gy = cur.accel_y; gz = cur.accel_z; }
+      gx += GRAV_ALPHA * (cur.accel_x - gx);
+      gy += GRAV_ALPHA * (cur.accel_y - gy);
+      gz += GRAV_ALPHA * (cur.accel_z - gz);
+      const lx = cur.accel_x - gx, ly = cur.accel_y - gy;
+      const lateral = Math.sqrt(lx ** 2 + ly ** 2) / G; // linear horizontal, in g
+      if ((cur.speed_kmh ?? 0) >= CORNER_MIN_KMH && lateral > HARSH_CORNER_G) {
+        harshCorner++; events++;
+      }
     }
   }
 
   const durationS = Math.round((sorted[sorted.length - 1].t_ms - sorted[0].t_ms) / 1000);
-  const distanceForRate = Math.max(distanceKm, 0.1);
-
-  // penalty scaled per km so short and long trips are comparable
+  // Scale penalties per km, with a floor so a very short trip can't explode the
+  // rate. Real drives have plenty of distance, so this only guards tiny tests.
+  const distanceForRate = Math.max(distanceKm, 1);
   const perKm = (n: number) => n / distanceForRate;
 
   const smoothness = clamp(100 - perKm(harshAccel) * 12);
