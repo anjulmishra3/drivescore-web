@@ -53,6 +53,7 @@ export interface Trip {
 
 // A single sensor sample captured in the foreground (quick / calibration trip).
 export interface TripSample {
+  seq?: number; // per-trip monotonic sequence for idempotent streaming uploads
   t_ms: number;
   lat?: number | null;
   lng?: number | null;
