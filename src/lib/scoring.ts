@@ -18,9 +18,14 @@ const HARSH_BRAKE_G = 0.35;
 const HARSH_CORNER_G = 0.35;
 const SPEED_LIMIT_KMH = 120; // coarse fallback; real limits need map data (v1+)
 // GPS occasionally reports a wildly wrong fix, producing a huge position jump
-// (seen: an 811,000 km "trip"). Any step or speed implying more than this is
-// treated as a bad fix and ignored for distance/speed.
+// (seen: an 811,000 km "trip"). Speeds above this are treated as a bad fix.
 const MAX_PLAUSIBLE_KMH = 250;
+// GPS updates slower (~1 Hz) than we sample (25 Hz), so real movement appears as
+// a small jump between two adjacent samples — legitimate even though its implied
+// speed over 40 ms looks enormous. We therefore accept any step up to this size,
+// and only reject *large* jumps whose implied speed is also implausible (a true
+// GPS teleport). A step this big can't be real between nearby samples.
+const MAX_STEP_KM = 0.5;
 
 function clamp(n: number, lo = 0, hi = 100) {
   return Math.max(lo, Math.min(hi, Math.round(n)));
@@ -84,9 +89,13 @@ export function scoreTrip(samples: TripSample[]): ScoreBreakdown {
     const dt = (cur.t_ms - prev.t_ms) / 1000;
     if (dt <= 0) continue;
 
-    // add distance only if the step is physically plausible (drop GPS jumps)
+    // add distance unless the step is a GPS teleport: small steps are always
+    // fine (incl. slow-GPS-vs-fast-sampling jumps); a large step is kept only if
+    // its implied speed over the elapsed gap is still plausible.
     const stepKm = haversineKm(prev, cur);
-    if (stepKm / (dt / 3600) <= MAX_PLAUSIBLE_KMH) distanceKm += stepKm;
+    if (stepKm <= MAX_STEP_KM || stepKm / (dt / 3600) <= MAX_PLAUSIBLE_KMH) {
+      distanceKm += stepKm;
+    }
 
     const moving = (cur.speed_kmh ?? 0) >= MOVING_KMH;
 
