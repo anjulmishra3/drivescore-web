@@ -17,6 +17,10 @@ const HARSH_ACCEL_G = 0.30;
 const HARSH_BRAKE_G = 0.35;
 const HARSH_CORNER_G = 0.35;
 const SPEED_LIMIT_KMH = 120; // coarse fallback; real limits need map data (v1+)
+// GPS occasionally reports a wildly wrong fix, producing a huge position jump
+// (seen: an 811,000 km "trip"). Any step or speed implying more than this is
+// treated as a bad fix and ignored for distance/speed.
+const MAX_PLAUSIBLE_KMH = 250;
 
 function clamp(n: number, lo = 0, hi = 100) {
   return Math.max(lo, Math.min(hi, Math.round(n)));
@@ -80,11 +84,14 @@ export function scoreTrip(samples: TripSample[]): ScoreBreakdown {
     const dt = (cur.t_ms - prev.t_ms) / 1000;
     if (dt <= 0) continue;
 
-    distanceKm += haversineKm(prev, cur);
+    // add distance only if the step is physically plausible (drop GPS jumps)
+    const stepKm = haversineKm(prev, cur);
+    if (stepKm / (dt / 3600) <= MAX_PLAUSIBLE_KMH) distanceKm += stepKm;
+
     const moving = (cur.speed_kmh ?? 0) >= MOVING_KMH;
 
     // longitudinal acceleration from GPS speed (km/h -> m/s), while moving
-    if (cur.speed_kmh != null && prev.speed_kmh != null) {
+    if (cur.speed_kmh != null && prev.speed_kmh != null && cur.speed_kmh <= MAX_PLAUSIBLE_KMH) {
       maxSpeed = Math.max(maxSpeed, cur.speed_kmh);
       if (moving) {
         const dv = ((cur.speed_kmh - prev.speed_kmh) * 1000) / 3600;
