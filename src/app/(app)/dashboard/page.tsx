@@ -141,7 +141,11 @@ export default async function DashboardPage() {
         <div className="mb-3 text-sm font-medium text-slate-500">Recent trips</div>
         <div className="divide-y divide-slate-100">
           {list.map((t) => (
-            <div key={t.id} className="flex items-center justify-between py-3">
+            <Link
+              key={t.id}
+              href={`/trips/${t.id}/review`}
+              className="flex items-center justify-between py-3 transition hover:bg-slate-50"
+            >
               <div>
                 <div className="text-sm font-medium text-slate-800">{fmtDate(t.started_at)}</div>
                 <div className="text-xs text-slate-400">
@@ -157,7 +161,7 @@ export default async function DashboardPage() {
               >
                 {t.overall_score ?? "—"}
               </div>
-            </div>
+            </Link>
           ))}
         </div>
       </div>

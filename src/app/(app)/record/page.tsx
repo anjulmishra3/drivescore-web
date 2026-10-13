@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useRoadTripRecorder } from "@/lib/useRoadTripRecorder";
 
 function Stat({ label, value, tone }: { label: string; value: string; tone?: "good" | "warn" | "bad" }) {
@@ -27,17 +26,18 @@ const MANUAL_TAGS: { type: "lane_change" | "turn" | "overtake" | "hard_brake" | 
 
 export default function RecordPage() {
   const { status, start, finish, resume, discardRecovery, labels } = useRoadTripRecorder(25);
-  const router = useRouter();
   const [confirming, setConfirming] = useState(false);
 
   const mm = Math.floor(status.elapsed / 60);
   const hh = Math.floor(mm / 60);
   const clock = `${hh}:${String(mm % 60).padStart(2, "0")}:${String(status.elapsed % 60).padStart(2, "0")}`;
 
+  const [finishedTripId, setFinishedTripId] = useState<string | null>(null);
+
   async function doFinish() {
     setConfirming(false);
     const r = await finish();
-    if (r?.ok) router.push("/dashboard");
+    if (r?.ok) setFinishedTripId(r.tripId); // stay on the done screen to offer review
   }
 
   return (
@@ -217,7 +217,14 @@ export default function RecordPage() {
               ? `Saved, but ${status.pending.toLocaleString()} points are still pending upload — reconnect and reopen to finish syncing.`
               : "All data points uploaded successfully."}
           </p>
-          <Link href="/dashboard" className="btn-primary mt-4 inline-flex">Go to dashboard</Link>
+          <div className="mt-4 flex justify-center gap-2">
+            {(finishedTripId ?? status.tripId) && (
+              <Link href={`/trips/${finishedTripId ?? status.tripId}/review`} className="btn-primary">
+                Review {labels.count} labels
+              </Link>
+            )}
+            <Link href="/dashboard" className="btn-ghost">Dashboard</Link>
+          </div>
         </div>
       )}
 

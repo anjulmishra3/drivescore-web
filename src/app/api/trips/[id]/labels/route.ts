@@ -14,6 +14,21 @@ async function requireUser() {
   return { supabase, user };
 }
 
+export async function GET(_req: Request, { params }: { params: { id: string } }) {
+  const { supabase, user } = await requireUser();
+  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+
+  const { data, error } = await supabase
+    .from("trip_labels")
+    .select("*")
+    .eq("trip_id", params.id)
+    .eq("user_id", user.id)
+    .order("t_ms", { ascending: true });
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ labels: data ?? [] });
+}
+
 export async function POST(req: Request, { params }: { params: { id: string } }) {
   const { supabase, user } = await requireUser();
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
