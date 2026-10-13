@@ -35,7 +35,12 @@ export default function LoginPage({
             <input className="input" id="email" name="email" type="email" required autoComplete="email" />
           </div>
           <div>
-            <label className="label" htmlFor="password">Password</label>
+            <div className="flex items-baseline justify-between">
+              <label className="label" htmlFor="password">Password</label>
+              <Link href="/forgot-password" className="text-xs font-medium text-brand-600 hover:underline">
+                Forgot?
+              </Link>
+            </div>
             <input className="input" id="password" name="password" type="password" required autoComplete="current-password" />
           </div>
           <button className="btn-primary w-full" type="submit">Sign in</button>
