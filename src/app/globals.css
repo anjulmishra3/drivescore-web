@@ -33,3 +33,12 @@ body {
 .label {
   @apply mb-1.5 block text-sm font-medium text-slate-700;
 }
+
+/* Netflix-style draining countdown bar on the detection prompt */
+@keyframes drain {
+  from { width: 100%; }
+  to { width: 0%; }
+}
+.countdown-bar {
+  animation: drain 8s linear forwards;
+}

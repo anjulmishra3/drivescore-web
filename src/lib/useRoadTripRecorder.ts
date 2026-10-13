@@ -20,6 +20,7 @@ import {
 const IDB_FLUSH_MS = 1000; // memory -> IndexedDB
 const NET_FLUSH_MS = 4000; // IndexedDB -> server
 const UPLOAD_BATCH = 2000; // rows per network request
+export const PROMPT_MS = 8000; // how long a detection prompt stays before auto-dismiss
 
 export interface RecorderStatus {
   state: "idle" | "recording" | "finishing" | "done" | "error";
@@ -72,6 +73,7 @@ export function useRoadTripRecorder(hz = 25) {
   // --- maneuver labeling ---
   const detectorRef = useRef<LiveManeuverDetector | null>(null);
   const promptTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastPromptAtRef = useRef(0);
   const [pendingPrompt, setPendingPrompt] = useState<PendingPrompt | null>(null);
   const [recentLabels, setRecentLabels] = useState<RecentLabel[]>([]);
   const [labelCount, setLabelCount] = useState(0);
@@ -201,10 +203,14 @@ export function useRoadTripRecorder(hz = 25) {
     setLabelCount((n) => n + 1);
     setRecentLabels((r) => [{ id, t_ms: e.t_ms, source: "auto" as const, type: e.type, direction: null, confirmed: null }, ...r].slice(0, 8));
 
-    if (e.type === "lane_change") {
+    // Prompt for the detected maneuver (yes/no), with a cooldown so prompts
+    // don't stack. Auto-logging above already captured it regardless of answer.
+    const now = Date.now();
+    if (now - lastPromptAtRef.current > 6000) {
+      lastPromptAtRef.current = now;
       setPendingPrompt({ event: e, labelId: id });
       if (promptTimerRef.current) clearTimeout(promptTimerRef.current);
-      promptTimerRef.current = setTimeout(() => setPendingPrompt(null), 9000); // auto-dismiss
+      promptTimerRef.current = setTimeout(() => setPendingPrompt(null), PROMPT_MS);
     }
   }, [postLabel]);
 
@@ -220,18 +226,20 @@ export function useRoadTripRecorder(hz = 25) {
     setRecentLabels((r) => [{ id, t_ms, source: "manual" as const, type, direction, confirmed: null }, ...r].slice(0, 8));
   }, [postLabel]);
 
-  // answer a prompt (yes/no) → PATCH confirmed
-  const answerPrompt = useCallback(async (yes: boolean) => {
+  // answer a prompt (yes/no, optional direction for lane changes) → PATCH
+  const answerPrompt = useCallback(async (yes: boolean, direction: "L" | "R" | null = null) => {
     const p = pendingPrompt;
     setPendingPrompt(null);
     if (promptTimerRef.current) clearTimeout(promptTimerRef.current);
     if (!p?.labelId || !tripIdRef.current) return;
-    setRecentLabels((r) => r.map((x) => (x.id === p.labelId ? { ...x, confirmed: yes } : x)));
+    setRecentLabels((r) => r.map((x) => (x.id === p.labelId ? { ...x, confirmed: yes, direction: direction ?? x.direction } : x)));
+    const body: Record<string, unknown> = { label_id: p.labelId, confirmed: yes };
+    if (direction) body.direction = direction;
     try {
       await fetch(`/api/trips/${tripIdRef.current}/labels`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ label_id: p.labelId, confirmed: yes }),
+        body: JSON.stringify(body),
       });
     } catch { /* best effort */ }
   }, [pendingPrompt]);

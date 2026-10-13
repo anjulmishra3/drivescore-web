@@ -14,19 +14,25 @@ function Stat({ label, value, tone }: { label: string; value: string; tone?: "go
   );
 }
 
-const MANUAL_TAGS: { type: "lane_change" | "turn" | "overtake" | "hard_brake" | "stop" | "other"; label: string; dir?: "L" | "R" }[] = [
+// A small, focused manual set (revealed only when the driver's passenger wants it).
+const MANUAL_TAGS: { type: "lane_change" | "turn" | "overtake" | "hard_brake" | "other"; label: string; dir?: "L" | "R" }[] = [
   { type: "lane_change", label: "Lane ◀ L", dir: "L" },
   { type: "lane_change", label: "Lane R ▶", dir: "R" },
   { type: "turn", label: "Turn" },
   { type: "overtake", label: "Overtake" },
   { type: "hard_brake", label: "Hard brake" },
-  { type: "stop", label: "Stop" },
   { type: "other", label: "Other" },
 ];
+
+const TYPE_LABEL: Record<string, string> = {
+  lane_change: "Lane change", turn: "Turn", overtake: "Overtake",
+  hard_brake: "Hard brake", stop: "Stop", other: "Maneuver",
+};
 
 export default function RecordPage() {
   const { status, start, finish, resume, discardRecovery, labels } = useRoadTripRecorder(25);
   const [confirming, setConfirming] = useState(false);
+  const [showManual, setShowManual] = useState(false);
 
   const mm = Math.floor(status.elapsed / 60);
   const hh = Math.floor(mm / 60);
@@ -119,72 +125,36 @@ export default function RecordPage() {
             <Stat label="Motion" value={status.live.motion ? "ok" : "waiting…"} tone={status.live.motion ? "good" : "warn"} />
           </div>
 
-          {/* ── Labeling (for a passenger — do not tap while driving) ── */}
-          <div className="card space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-sm font-medium text-slate-500">Label maneuvers</span>
-              <span className="text-xs text-slate-400">{labels.count} tagged</span>
-            </div>
-            <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
-              👤 For a passenger only — don&apos;t tap while driving. Detected maneuvers are logged
-              automatically regardless.
-            </p>
-
-            {/* auto-detected lane-change prompt */}
-            {labels.pending && (
-              <div className="rounded-xl border-2 border-brand-300 bg-brand-50 p-3">
-                <div className="text-sm font-semibold text-brand-900">
-                  Detected a lane change — was it one?
-                </div>
-                <div className="mt-0.5 text-xs text-brand-700">
-                  {labels.pending.event.speed_kmh?.toFixed(0) ?? "—"} km/h · net{" "}
-                  {labels.pending.event.net_heading.toFixed(0)}° · peak {labels.pending.event.peak_yaw.toFixed(0)}°/s
-                </div>
-                <div className="mt-3 flex gap-2">
-                  <button className="btn-primary flex-1 py-3" onClick={() => labels.answerPrompt(true)}>Yes</button>
-                  <button className="btn-ghost flex-1 py-3" onClick={() => labels.answerPrompt(false)}>No</button>
-                  <button className="btn-ghost px-3 py-3" onClick={labels.dismissPrompt}>Skip</button>
-                </div>
+          {/* ── Labeling: detector drives it; minimal manual fallback ── */}
+          <div className="card flex items-center justify-between">
+            <div>
+              <div className="text-sm font-medium text-slate-700">Maneuver labels</div>
+              <div className="text-xs text-slate-400">
+                {labels.count} tagged · prompts appear automatically — review the rest when parked
               </div>
-            )}
-
-            {/* manual tag buttons */}
-            <div className="grid grid-cols-3 gap-2">
-              {MANUAL_TAGS.map((t) => (
-                <button
-                  key={t.label}
-                  className="btn-ghost py-3 text-xs"
-                  onClick={() => labels.logManual(t.type, t.dir ?? null)}
-                >
-                  {t.label}
-                </button>
-              ))}
             </div>
+            <button className="btn-ghost text-xs" onClick={() => setShowManual((v) => !v)}>
+              {showManual ? "Hide" : "＋ Tag"}
+            </button>
+          </div>
 
-            {/* recent tags + undo */}
-            {labels.recent.length > 0 && (
-              <div className="space-y-1">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-medium text-slate-400">Recent</span>
-                  <button className="text-xs font-medium text-brand-600 hover:underline" onClick={labels.undoLast}>
-                    Undo last
+          {showManual && (
+            <div className="card space-y-2">
+              <p className="text-xs text-slate-400">Passenger only — tag something the detector missed:</p>
+              <div className="grid grid-cols-3 gap-2">
+                {MANUAL_TAGS.map((t) => (
+                  <button key={t.label} className="btn-ghost py-3 text-xs" onClick={() => labels.logManual(t.type, t.dir ?? null)}>
+                    {t.label}
                   </button>
-                </div>
-                {labels.recent.slice(0, 4).map((l, i) => (
-                  <div key={(l.id ?? "x") + i} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-1.5 text-xs">
-                    <span className="font-medium text-slate-700">
-                      {l.type?.replace("_", " ")}{l.direction ? ` ${l.direction}` : ""}
-                      <span className="ml-1.5 text-slate-400">{l.source === "auto" ? "· auto" : "· manual"}</span>
-                    </span>
-                    <span className="tabular-nums text-slate-400">
-                      {Math.floor(l.t_ms / 60000)}:{String(Math.floor((l.t_ms % 60000) / 1000)).padStart(2, "0")}
-                      {l.confirmed === true ? " ✓" : l.confirmed === false ? " ✗" : ""}
-                    </span>
-                  </div>
                 ))}
               </div>
-            )}
-          </div>
+              {labels.recent.length > 0 && (
+                <button className="w-full text-xs font-medium text-brand-600 hover:underline" onClick={labels.undoLast}>
+                  Undo last tag
+                </button>
+              )}
+            </div>
+          )}
 
           {status.error && (
             <div className="card border-slate-200 bg-slate-50 text-xs text-slate-500">{status.error}</div>
@@ -233,6 +203,40 @@ export default function RecordPage() {
           <div className="text-sm font-semibold text-red-800">Something went wrong</div>
           <p className="mt-1 text-sm text-red-700">{status.error}</p>
           <button className="btn-primary mt-3" onClick={() => finish()}>Retry finalize</button>
+        </div>
+      )}
+
+      {/* ── Floating detection prompt (Netflix-style auto-dismiss) ── */}
+      {labels.pending && (
+        <div className="fixed inset-x-0 bottom-5 z-50 mx-auto max-w-md px-4">
+          <div className="overflow-hidden rounded-2xl border border-brand-300 bg-white shadow-2xl">
+            <div className="p-4">
+              <div className="flex items-baseline justify-between">
+                <div className="text-lg font-bold text-slate-900">
+                  {TYPE_LABEL[labels.pending.event.type] ?? "Maneuver"}?
+                </div>
+                <div className="text-xs text-slate-400">
+                  {labels.pending.event.speed_kmh?.toFixed(0) ?? "—"} km/h
+                </div>
+              </div>
+              {labels.pending.event.type === "lane_change" ? (
+                <div className="mt-3 grid grid-cols-3 gap-2">
+                  <button className="btn-primary py-3" onClick={() => labels.answerPrompt(true, "L")}>◀ Left</button>
+                  <button className="btn-primary py-3" onClick={() => labels.answerPrompt(true, "R")}>Right ▶</button>
+                  <button className="btn-ghost py-3" onClick={() => labels.answerPrompt(false)}>No</button>
+                </div>
+              ) : (
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <button className="btn-primary py-3" onClick={() => labels.answerPrompt(true)}>Yes</button>
+                  <button className="btn-ghost py-3" onClick={() => labels.answerPrompt(false)}>No</button>
+                </div>
+              )}
+            </div>
+            {/* draining countdown — restarts each prompt via key */}
+            <div className="h-1.5 bg-brand-100">
+              <div key={labels.pending.event.t_ms} className="countdown-bar h-full bg-brand-500" />
+            </div>
+          </div>
         </div>
       )}
     </div>

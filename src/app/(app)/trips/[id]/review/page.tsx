@@ -1,7 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import dynamic from "next/dynamic";
+import { createClient } from "@/lib/supabase/client";
+import type { MapLabel } from "@/components/RouteMap";
+
+const RouteMap = dynamic(() => import("@/components/RouteMap"), {
+  ssr: false,
+  loading: () => <div className="h-72 w-full animate-pulse rounded-xl bg-slate-100" />,
+});
 
 interface Label {
   id: string;
@@ -11,6 +19,8 @@ interface Label {
   direction: "L" | "R" | null;
   confirmed: boolean | null;
   speed_kmh: number | null;
+  lat: number | null;
+  lng: number | null;
   meta: { peak_yaw?: number; net_heading?: number; dur_s?: number } | null;
 }
 
@@ -24,8 +34,11 @@ function clock(ms: number) {
 export default function ReviewPage({ params }: { params: { id: string } }) {
   const tripId = params.id;
   const [labels, setLabels] = useState<Label[]>([]);
+  const [route, setRoute] = useState<[number, number][]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
+  const rowRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -33,12 +46,28 @@ export default function ReviewPage({ params }: { params: { id: string } }) {
       const res = await fetch(`/api/trips/${tripId}/labels`);
       const { labels } = await res.json();
       setLabels(labels ?? []);
+      // downsampled GPS track for the map (RLS-safe RPC)
+      const supabase = createClient();
+      const { data: pts } = await supabase.rpc("trip_route", { p_trip: tripId, p_max: 800 });
+      if (Array.isArray(pts)) {
+        setRoute(pts.filter((p) => p.lat != null && p.lng != null).map((p) => [p.lat, p.lng] as [number, number]));
+      }
     } finally {
       setLoading(false);
     }
   }, [tripId]);
 
   useEffect(() => { load(); }, [load]);
+
+  // clicking a marker selects a label → scroll its card into view
+  const selectFromMap = useCallback((id: string) => {
+    setSelectedId(id);
+    rowRefs.current[id]?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, []);
+
+  const mapLabels: MapLabel[] = labels.map((l) => ({
+    id: l.id, lat: l.lat ?? null, lng: l.lng ?? null, type: l.type, source: l.source, confirmed: l.confirmed,
+  }));
 
   const patch = useCallback(async (id: string, body: Partial<Label>) => {
     setBusy(id);
@@ -78,6 +107,18 @@ export default function ReviewPage({ params }: { params: { id: string } }) {
         trains the scoring engine — ✓ keeps it, ✗ marks a false detection, and you can fix the type.
       </p>
 
+      {!loading && (route.length > 0 || mapLabels.some((l) => l.lat != null)) && (
+        <div className="card p-2">
+          <RouteMap route={route} labels={mapLabels} selectedId={selectedId} onSelect={selectFromMap} />
+          <div className="mt-2 flex items-center justify-center gap-4 text-xs text-slate-400">
+            <span>🔵 route</span>
+            <span><span className="text-score-ok">●</span> to review</span>
+            <span><span className="text-score-good">●</span> confirmed</span>
+            <span><span className="text-score-bad">●</span> false</span>
+          </div>
+        </div>
+      )}
+
       {!loading && n > 0 && (
         <div className="card grid grid-cols-4 gap-2 text-center text-sm">
           <div><div className="text-xs text-slate-400">Events</div><div className="font-bold">{n}</div></div>
@@ -98,7 +139,9 @@ export default function ReviewPage({ params }: { params: { id: string } }) {
           {labels.map((l) => (
             <div
               key={l.id}
-              className={`card ${l.confirmed === true ? "border-score-good/40" : l.confirmed === false ? "border-score-bad/40 opacity-70" : ""}`}
+              ref={(el) => { rowRefs.current[l.id] = el; }}
+              onClick={() => setSelectedId(l.id)}
+              className={`card cursor-pointer transition ${selectedId === l.id ? "ring-2 ring-brand-400" : ""} ${l.confirmed === true ? "border-score-good/40" : l.confirmed === false ? "border-score-bad/40 opacity-70" : ""}`}
             >
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
