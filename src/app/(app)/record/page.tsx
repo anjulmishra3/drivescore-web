@@ -15,8 +15,18 @@ function Stat({ label, value, tone }: { label: string; value: string; tone?: "go
   );
 }
 
+const MANUAL_TAGS: { type: "lane_change" | "turn" | "overtake" | "hard_brake" | "stop" | "other"; label: string; dir?: "L" | "R" }[] = [
+  { type: "lane_change", label: "Lane ◀ L", dir: "L" },
+  { type: "lane_change", label: "Lane R ▶", dir: "R" },
+  { type: "turn", label: "Turn" },
+  { type: "overtake", label: "Overtake" },
+  { type: "hard_brake", label: "Hard brake" },
+  { type: "stop", label: "Stop" },
+  { type: "other", label: "Other" },
+];
+
 export default function RecordPage() {
-  const { status, start, finish, resume, discardRecovery } = useRoadTripRecorder(25);
+  const { status, start, finish, resume, discardRecovery, labels } = useRoadTripRecorder(25);
   const router = useRouter();
   const [confirming, setConfirming] = useState(false);
 
@@ -107,6 +117,73 @@ export default function RecordPage() {
             <Stat label="Accel" value={status.live.accel == null ? "—" : `${status.live.accel.toFixed(1)} m/s²`} />
             <Stat label="GPS" value={status.live.gps ? "ok" : "waiting…"} tone={status.live.gps ? "good" : "warn"} />
             <Stat label="Motion" value={status.live.motion ? "ok" : "waiting…"} tone={status.live.motion ? "good" : "warn"} />
+          </div>
+
+          {/* ── Labeling (for a passenger — do not tap while driving) ── */}
+          <div className="card space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium text-slate-500">Label maneuvers</span>
+              <span className="text-xs text-slate-400">{labels.count} tagged</span>
+            </div>
+            <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              👤 For a passenger only — don&apos;t tap while driving. Detected maneuvers are logged
+              automatically regardless.
+            </p>
+
+            {/* auto-detected lane-change prompt */}
+            {labels.pending && (
+              <div className="rounded-xl border-2 border-brand-300 bg-brand-50 p-3">
+                <div className="text-sm font-semibold text-brand-900">
+                  Detected a lane change — was it one?
+                </div>
+                <div className="mt-0.5 text-xs text-brand-700">
+                  {labels.pending.event.speed_kmh?.toFixed(0) ?? "—"} km/h · net{" "}
+                  {labels.pending.event.net_heading.toFixed(0)}° · peak {labels.pending.event.peak_yaw.toFixed(0)}°/s
+                </div>
+                <div className="mt-3 flex gap-2">
+                  <button className="btn-primary flex-1 py-3" onClick={() => labels.answerPrompt(true)}>Yes</button>
+                  <button className="btn-ghost flex-1 py-3" onClick={() => labels.answerPrompt(false)}>No</button>
+                  <button className="btn-ghost px-3 py-3" onClick={labels.dismissPrompt}>Skip</button>
+                </div>
+              </div>
+            )}
+
+            {/* manual tag buttons */}
+            <div className="grid grid-cols-3 gap-2">
+              {MANUAL_TAGS.map((t) => (
+                <button
+                  key={t.label}
+                  className="btn-ghost py-3 text-xs"
+                  onClick={() => labels.logManual(t.type, t.dir ?? null)}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+
+            {/* recent tags + undo */}
+            {labels.recent.length > 0 && (
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-medium text-slate-400">Recent</span>
+                  <button className="text-xs font-medium text-brand-600 hover:underline" onClick={labels.undoLast}>
+                    Undo last
+                  </button>
+                </div>
+                {labels.recent.slice(0, 4).map((l, i) => (
+                  <div key={(l.id ?? "x") + i} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-1.5 text-xs">
+                    <span className="font-medium text-slate-700">
+                      {l.type?.replace("_", " ")}{l.direction ? ` ${l.direction}` : ""}
+                      <span className="ml-1.5 text-slate-400">{l.source === "auto" ? "· auto" : "· manual"}</span>
+                    </span>
+                    <span className="tabular-nums text-slate-400">
+                      {Math.floor(l.t_ms / 60000)}:{String(Math.floor((l.t_ms % 60000) / 1000)).padStart(2, "0")}
+                      {l.confirmed === true ? " ✓" : l.confirmed === false ? " ✗" : ""}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {status.error && (

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { TripSample, TripSource } from "@/types/db";
 import { scoreTrip } from "@/lib/scoring";
+import { LiveManeuverDetector, type ManeuverEvent } from "@/lib/liveManeuverDetector";
 import {
   countAll,
   countUnsynced,
@@ -35,6 +36,22 @@ export interface RecorderStatus {
   live: { speed_kmh: number | null; accel: number | null; gps: boolean; motion: boolean };
 }
 
+export type ManeuverLabelType = "lane_change" | "turn" | "overtake" | "hard_brake" | "stop" | "other";
+
+export interface RecentLabel {
+  id: string | null;
+  t_ms: number;
+  source: "auto" | "manual";
+  type: ManeuverLabelType | null;
+  direction: "L" | "R" | null;
+  confirmed: boolean | null;
+}
+
+export interface PendingPrompt {
+  event: ManeuverEvent;
+  labelId: string | null;
+}
+
 export function useRoadTripRecorder(hz = 25) {
   const [status, setStatus] = useState<RecorderStatus>({
     state: "idle", tripId: null, elapsed: 0, captured: 0, uploaded: 0, pending: 0,
@@ -51,6 +68,13 @@ export function useRoadTripRecorder(hz = 25) {
   const memBuf = useRef<StoredSample[]>([]);
   const wakeRef = useRef<WakeLockSentinel | null>(null);
   const flushing = useRef(false);
+
+  // --- maneuver labeling ---
+  const detectorRef = useRef<LiveManeuverDetector | null>(null);
+  const promptTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [pendingPrompt, setPendingPrompt] = useState<PendingPrompt | null>(null);
+  const [recentLabels, setRecentLabels] = useState<RecentLabel[]>([]);
+  const [labelCount, setLabelCount] = useState(0);
 
   const samplerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const idbRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -132,6 +156,9 @@ export function useRoadTripRecorder(hz = 25) {
     if (geoWatch.current != null) navigator.geolocation.clearWatch(geoWatch.current);
     geoWatch.current = null;
     window.removeEventListener("devicemotion", onMotion);
+    detectorRef.current = null;
+    if (promptTimerRef.current) clearTimeout(promptTimerRef.current);
+    setPendingPrompt(null);
   }, [onMotion]);
 
   const acquireWake = useCallback(async () => {
@@ -146,8 +173,90 @@ export function useRoadTripRecorder(hz = 25) {
     }
   }, [patch]);
 
+  // insert a label row; returns its server id (or null on failure)
+  const postLabel = useCallback(async (body: Record<string, unknown>): Promise<string | null> => {
+    const tripId = tripIdRef.current;
+    if (!tripId) return null;
+    try {
+      const res = await fetch(`/api/trips/${tripId}/labels`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) return null;
+      const { id } = await res.json();
+      return id ?? null;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  // auto-detected maneuver → log it, and (for lane changes) raise a quick prompt
+  const handleAutoEvent = useCallback(async (e: ManeuverEvent) => {
+    const id = await postLabel({
+      t_ms: e.t_ms, source: "auto", type: e.type,
+      lat: e.lat, lng: e.lng, speed_kmh: e.speed_kmh,
+      meta: { peak_yaw: e.peak_yaw, net_heading: e.net_heading, dur_s: e.dur_s },
+    });
+    setLabelCount((n) => n + 1);
+    setRecentLabels((r) => [{ id, t_ms: e.t_ms, source: "auto" as const, type: e.type, direction: null, confirmed: null }, ...r].slice(0, 8));
+
+    if (e.type === "lane_change") {
+      setPendingPrompt({ event: e, labelId: id });
+      if (promptTimerRef.current) clearTimeout(promptTimerRef.current);
+      promptTimerRef.current = setTimeout(() => setPendingPrompt(null), 9000); // auto-dismiss
+    }
+  }, [postLabel]);
+
+  // manual tag at the current moment
+  const logManual = useCallback(async (type: ManeuverLabelType, direction: "L" | "R" | null = null) => {
+    const l = latest.current;
+    const t_ms = Date.now() - startMsRef.current;
+    const id = await postLabel({
+      t_ms, source: "manual", type, direction,
+      lat: l.lat ?? null, lng: l.lng ?? null, speed_kmh: l.speed_kmh ?? null,
+    });
+    setLabelCount((n) => n + 1);
+    setRecentLabels((r) => [{ id, t_ms, source: "manual" as const, type, direction, confirmed: null }, ...r].slice(0, 8));
+  }, [postLabel]);
+
+  // answer a prompt (yes/no) → PATCH confirmed
+  const answerPrompt = useCallback(async (yes: boolean) => {
+    const p = pendingPrompt;
+    setPendingPrompt(null);
+    if (promptTimerRef.current) clearTimeout(promptTimerRef.current);
+    if (!p?.labelId || !tripIdRef.current) return;
+    setRecentLabels((r) => r.map((x) => (x.id === p.labelId ? { ...x, confirmed: yes } : x)));
+    try {
+      await fetch(`/api/trips/${tripIdRef.current}/labels`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label_id: p.labelId, confirmed: yes }),
+      });
+    } catch { /* best effort */ }
+  }, [pendingPrompt]);
+
+  const dismissPrompt = useCallback(() => {
+    setPendingPrompt(null);
+    if (promptTimerRef.current) clearTimeout(promptTimerRef.current);
+  }, []);
+
+  // undo the most recent label
+  const undoLast = useCallback(async () => {
+    const top = recentLabels[0];
+    if (!top) return;
+    setRecentLabels((r) => r.slice(1));
+    setLabelCount((n) => Math.max(0, n - 1));
+    if (top.id && tripIdRef.current) {
+      try {
+        await fetch(`/api/trips/${tripIdRef.current}/labels?label_id=${top.id}`, { method: "DELETE" });
+      } catch { /* best effort */ }
+    }
+  }, [recentLabels]);
+
   const beginLoops = useCallback(() => {
     const hzMs = Math.max(10, Math.round(1000 / hz));
+    detectorRef.current = new LiveManeuverDetector((e) => { void handleAutoEvent(e); });
 
     window.addEventListener("devicemotion", onMotion);
     geoWatch.current = navigator.geolocation.watchPosition(onPosition, () => {}, {
@@ -157,12 +266,20 @@ export function useRoadTripRecorder(hz = 25) {
     samplerRef.current = setInterval(() => {
       const l = latest.current;
       seqRef.current += 1;
+      const t_ms = Date.now() - startMsRef.current;
       memBuf.current.push({
         tripId: tripIdRef.current!, seq: seqRef.current, synced: 0,
-        t_ms: Date.now() - startMsRef.current,
+        t_ms,
         lat: l.lat ?? null, lng: l.lng ?? null, speed_kmh: l.speed_kmh ?? null,
         accel_x: l.accel_x ?? null, accel_y: l.accel_y ?? null, accel_z: l.accel_z ?? null,
         gyro_alpha: l.gyro_alpha ?? null, gyro_beta: l.gyro_beta ?? null, gyro_gamma: l.gyro_gamma ?? null,
+      });
+      // feed the live maneuver detector
+      detectorRef.current?.push({
+        t_ms, speed_kmh: l.speed_kmh ?? null,
+        accel_x: l.accel_x ?? null, accel_y: l.accel_y ?? null, accel_z: l.accel_z ?? null,
+        gyro_alpha: l.gyro_alpha ?? null, gyro_beta: l.gyro_beta ?? null, gyro_gamma: l.gyro_gamma ?? null,
+        lat: l.lat ?? null, lng: l.lng ?? null,
       });
     }, hzMs);
 
@@ -200,7 +317,7 @@ export function useRoadTripRecorder(hz = 25) {
         },
       });
     }, 500);
-  }, [flush, hz, onMotion, onPosition, patch]);
+  }, [flush, hz, onMotion, onPosition, patch, handleAutoEvent]);
 
   const requestMotionPerm = useCallback(async () => {
     const M = (window as any).DeviceMotionEvent;
@@ -323,5 +440,16 @@ export function useRoadTripRecorder(hz = 25) {
 
   useEffect(() => () => stopTimers(), [stopTimers]);
 
-  return { status, start, finish, resume, discardRecovery };
+  return {
+    status, start, finish, resume, discardRecovery,
+    labels: {
+      pending: pendingPrompt,
+      recent: recentLabels,
+      count: labelCount,
+      logManual,
+      answerPrompt,
+      dismissPrompt,
+      undoLast,
+    },
+  };
 }
