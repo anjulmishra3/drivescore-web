@@ -4,6 +4,8 @@ import { useEffect, useRef } from "react";
 import "leaflet/dist/leaflet.css";
 import type { Map as LMap, CircleMarker, Polyline } from "leaflet";
 
+export interface RoutePoint { t_ms: number; lat: number; lng: number; speed_kmh?: number | null }
+
 export interface MapLabel {
   id: string;
   lat: number | null;
@@ -16,7 +18,8 @@ export interface MapLabel {
 function colorFor(l: MapLabel) {
   if (l.confirmed === true) return "#16a34a";
   if (l.confirmed === false) return "#dc2626";
-  return "#f59e0b"; // unanswered
+  if (l.source === "manual") return "#1f66f5";
+  return "#f59e0b"; // unanswered auto
 }
 
 export default function RouteMap({
@@ -24,28 +27,51 @@ export default function RouteMap({
   labels,
   selectedId,
   onSelect,
+  onAddAt,
+  highlight,
 }: {
-  route: [number, number][];
+  route: RoutePoint[];
   labels: MapLabel[];
   selectedId: string | null;
   onSelect: (id: string) => void;
+  onAddAt?: (pt: RoutePoint) => void;
+  highlight?: { lat: number; lng: number } | null;
 }) {
   const elRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<LMap | null>(null);
   const markersRef = useRef<Record<string, CircleMarker>>({});
   const lineRef = useRef<Polyline | null>(null);
+  const hitRef = useRef<Polyline | null>(null);
+  const tempRef = useRef<CircleMarker | null>(null);
+  // keep latest route/handler without re-binding the map click
+  const routeRef = useRef<RoutePoint[]>(route);
+  const addRef = useRef<typeof onAddAt>(onAddAt);
+  routeRef.current = route;
+  addRef.current = onAddAt;
 
-  // init once
+  function nearest(lat: number, lng: number): RoutePoint | null {
+    let best: RoutePoint | null = null, bd = Infinity;
+    for (const p of routeRef.current) {
+      const d = (p.lat - lat) ** 2 + (p.lng - lng) ** 2;
+      if (d < bd) { bd = d; best = p; }
+    }
+    return best;
+  }
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
       const L = (await import("leaflet")).default;
       if (cancelled || !elRef.current || mapRef.current) return;
-      const map = L.map(elRef.current, { zoomControl: true, attributionControl: true });
+      const map = L.map(elRef.current, { zoomControl: true });
       L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        maxZoom: 19,
-        attribution: "© OpenStreetMap",
+        maxZoom: 19, attribution: "© OpenStreetMap",
       }).addTo(map);
+      map.on("click", (e: { latlng: { lat: number; lng: number } }) => {
+        if (!addRef.current) return;
+        const p = nearest(e.latlng.lat, e.latlng.lng);
+        if (p) addRef.current(p);
+      });
       mapRef.current = map;
       draw(L);
     })();
@@ -53,7 +79,6 @@ export default function RouteMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // redraw when data changes
   useEffect(() => {
     (async () => {
       const L = (await import("leaflet")).default;
@@ -62,27 +87,46 @@ export default function RouteMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [route, labels]);
 
-  // highlight + pan to selection
+  // temp "about to add" marker
+  useEffect(() => {
+    (async () => {
+      const L = (await import("leaflet")).default;
+      const map = mapRef.current;
+      if (!map) return;
+      if (tempRef.current) { tempRef.current.remove(); tempRef.current = null; }
+      if (highlight) {
+        tempRef.current = L.circleMarker([highlight.lat, highlight.lng], {
+          radius: 10, weight: 3, color: "#1f66f5", fillColor: "#bcdcff", fillOpacity: 0.9,
+        }).addTo(map);
+        map.panTo([highlight.lat, highlight.lng]);
+      }
+    })();
+  }, [highlight]);
+
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !selectedId) return;
     const m = markersRef.current[selectedId];
-    if (m) {
-      map.panTo(m.getLatLng());
-      m.setStyle({ weight: 4, radius: 10 });
-      m.bringToFront();
-    }
+    if (m) { map.panTo(m.getLatLng()); m.setStyle({ weight: 4, radius: 10 }); m.bringToFront(); }
     return () => { if (m) m.setStyle({ weight: 2, radius: 7 }); };
   }, [selectedId]);
 
   function draw(L: typeof import("leaflet")) {
     const map = mapRef.current!;
-    if (lineRef.current) { lineRef.current.remove(); lineRef.current = null; }
+    [lineRef, hitRef].forEach((r) => { if (r.current) { r.current.remove(); r.current = null; } });
     Object.values(markersRef.current).forEach((m) => m.remove());
     markersRef.current = {};
 
-    if (route.length > 1) {
-      lineRef.current = L.polyline(route, { color: "#1f66f5", weight: 3, opacity: 0.8 }).addTo(map);
+    const coords = route.map((p) => [p.lat, p.lng] as [number, number]);
+    if (coords.length > 1) {
+      lineRef.current = L.polyline(coords, { color: "#1f66f5", weight: 3, opacity: 0.85 }).addTo(map);
+      // wide invisible hit line so tapping near the route registers
+      hitRef.current = L.polyline(coords, { color: "#000", weight: 22, opacity: 0 }).addTo(map);
+      hitRef.current.on("click", (e: { latlng: { lat: number; lng: number } }) => {
+        if (!addRef.current) return;
+        const p = nearest(e.latlng.lat, e.latlng.lng);
+        if (p) addRef.current(p);
+      });
     }
 
     for (const l of labels) {
@@ -95,15 +139,13 @@ export default function RouteMap({
       markersRef.current[l.id] = m;
     }
 
-    const bounds = lineRef.current?.getBounds();
-    if (bounds && bounds.isValid()) map.fitBounds(bounds, { padding: [30, 30] });
-    else if (labels.length) {
+    const b = lineRef.current?.getBounds();
+    if (b && b.isValid()) map.fitBounds(b, { padding: [30, 30] });
+    else if (labels.some((l) => l.lat != null)) {
       const pts = labels.filter((l) => l.lat != null).map((l) => [l.lat!, l.lng!] as [number, number]);
-      if (pts.length) map.fitBounds(L.latLngBounds(pts), { padding: [40, 40], maxZoom: 15 });
-    } else {
-      map.setView([15.3, 73.9], 11); // fallback: Goa
-    }
+      map.fitBounds(L.latLngBounds(pts), { padding: [40, 40], maxZoom: 15 });
+    } else map.setView([15.3, 73.9], 11);
   }
 
-  return <div ref={elRef} className="h-72 w-full rounded-xl" style={{ zIndex: 0 }} />;
+  return <div ref={elRef} className="h-80 w-full rounded-xl" style={{ zIndex: 0 }} />;
 }

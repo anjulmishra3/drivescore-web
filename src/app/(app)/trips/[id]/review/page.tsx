@@ -4,7 +4,20 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import { createClient } from "@/lib/supabase/client";
-import type { MapLabel } from "@/components/RouteMap";
+import type { MapLabel, RoutePoint } from "@/components/RouteMap";
+
+const ADD_TAGS: { type: string; label: string; dir?: "L" | "R" }[] = [
+  { type: "lane_change", label: "Lane ◀ L", dir: "L" },
+  { type: "lane_change", label: "Lane R ▶", dir: "R" },
+  { type: "turn", label: "Turn" },
+  { type: "overtake", label: "Overtake" },
+  { type: "hard_brake", label: "Hard brake" },
+  { type: "harsh_accel", label: "Harsh accel" },
+  { type: "stop", label: "Stop" },
+  { type: "wrong_side", label: "Wrong side" },
+  { type: "phone_use", label: "Phone use" },
+  { type: "other", label: "Other" },
+];
 
 const RouteMap = dynamic(() => import("@/components/RouteMap"), {
   ssr: false,
@@ -34,8 +47,9 @@ function clock(ms: number) {
 export default function ReviewPage({ params }: { params: { id: string } }) {
   const tripId = params.id;
   const [labels, setLabels] = useState<Label[]>([]);
-  const [route, setRoute] = useState<[number, number][]>([]);
+  const [route, setRoute] = useState<RoutePoint[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [pendingAdd, setPendingAdd] = useState<RoutePoint | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const rowRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -48,9 +62,9 @@ export default function ReviewPage({ params }: { params: { id: string } }) {
       setLabels(labels ?? []);
       // downsampled GPS track for the map (RLS-safe RPC)
       const supabase = createClient();
-      const { data: pts } = await supabase.rpc("trip_route", { p_trip: tripId, p_max: 800 });
+      const { data: pts } = await supabase.rpc("trip_route", { p_trip: tripId, p_max: 1200 });
       if (Array.isArray(pts)) {
-        setRoute(pts.filter((p) => p.lat != null && p.lng != null).map((p) => [p.lat, p.lng] as [number, number]));
+        setRoute(pts.filter((p) => p.lat != null && p.lng != null));
       }
     } finally {
       setLoading(false);
@@ -64,6 +78,22 @@ export default function ReviewPage({ params }: { params: { id: string } }) {
     setSelectedId(id);
     rowRefs.current[id]?.scrollIntoView({ behavior: "smooth", block: "center" });
   }, []);
+
+  // tap a point on the map → choose a type → save a label there
+  const addLabelAt = useCallback(async (type: string, direction: "L" | "R" | null) => {
+    const pt = pendingAdd;
+    setPendingAdd(null);
+    if (!pt) return;
+    await fetch(`/api/trips/${tripId}/labels`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        t_ms: pt.t_ms, source: "manual", type, direction,
+        lat: pt.lat, lng: pt.lng, speed_kmh: pt.speed_kmh ?? null, confirmed: true,
+      }),
+    });
+    load();
+  }, [pendingAdd, tripId, load]);
 
   const mapLabels: MapLabel[] = labels.map((l) => ({
     id: l.id, lat: l.lat ?? null, lng: l.lng ?? null, type: l.type, source: l.source, confirmed: l.confirmed,
@@ -103,18 +133,26 @@ export default function ReviewPage({ params }: { params: { id: string } }) {
         <Link href="/dashboard" className="btn-ghost">Done</Link>
       </div>
       <p className="text-sm text-slate-500">
-        Confirm or correct each detected maneuver while parked. This is the ground truth that
-        trains the scoring engine — ✓ keeps it, ✗ marks a false detection, and you can fix the type.
+        Confirm or correct detected maneuvers, or <strong>tap anywhere on the route</strong> to add a
+        label at that spot. This is the ground truth that trains the scoring engine.
       </p>
 
       {!loading && (route.length > 0 || mapLabels.some((l) => l.lat != null)) && (
         <div className="card p-2">
-          <RouteMap route={route} labels={mapLabels} selectedId={selectedId} onSelect={selectFromMap} />
-          <div className="mt-2 flex items-center justify-center gap-4 text-xs text-slate-400">
+          <RouteMap
+            route={route}
+            labels={mapLabels}
+            selectedId={selectedId}
+            onSelect={selectFromMap}
+            onAddAt={(p) => setPendingAdd(p)}
+            highlight={pendingAdd}
+          />
+          <div className="mt-2 flex items-center justify-center gap-3 text-xs text-slate-400">
             <span>🔵 route</span>
             <span><span className="text-score-ok">●</span> to review</span>
             <span><span className="text-score-good">●</span> confirmed</span>
             <span><span className="text-score-bad">●</span> false</span>
+            <span><span className="text-brand-600">●</span> manual</span>
           </div>
         </div>
       )}
@@ -199,6 +237,32 @@ export default function ReviewPage({ params }: { params: { id: string } }) {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* tap-to-tag palette */}
+      {pendingAdd && (
+        <div className="fixed inset-x-0 bottom-0 z-50 mx-auto max-w-lg px-3 pb-4">
+          <div className="rounded-2xl border border-slate-200 bg-white p-3 shadow-2xl">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-sm font-semibold text-slate-700">
+                Tag at {Math.floor(pendingAdd.t_ms / 60000)}:{String(Math.floor((pendingAdd.t_ms % 60000) / 1000)).padStart(2, "0")}
+                {pendingAdd.speed_kmh != null ? ` · ${pendingAdd.speed_kmh.toFixed(0)} km/h` : ""}
+              </span>
+              <button className="text-xs font-medium text-slate-400 hover:text-slate-700" onClick={() => setPendingAdd(null)}>Cancel</button>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              {ADD_TAGS.map((t) => (
+                <button
+                  key={t.label}
+                  className="btn-ghost py-2.5 text-xs"
+                  onClick={() => addLabelAt(t.type, t.dir ?? null)}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
       )}
     </div>
