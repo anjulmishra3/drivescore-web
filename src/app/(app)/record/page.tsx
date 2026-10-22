@@ -15,10 +15,11 @@ function Stat({ label, value, tone }: { label: string; value: string; tone?: "go
 }
 
 // A small, focused manual set (revealed only when the driver's passenger wants it).
-const MANUAL_TAGS: { type: "lane_change" | "turn" | "harsh_corner" | "overtake" | "hard_brake" | "other"; label: string; dir?: "L" | "R" }[] = [
+const MANUAL_TAGS: { type: "lane_change" | "turn" | "u_turn" | "harsh_corner" | "overtake" | "hard_brake" | "other"; label: string; dir?: "L" | "R" }[] = [
   { type: "lane_change", label: "Lane ◀ L", dir: "L" },
   { type: "lane_change", label: "Lane R ▶", dir: "R" },
   { type: "turn", label: "Turn" },
+  { type: "u_turn", label: "U-turn" },
   { type: "harsh_corner", label: "Harsh corner" },
   { type: "hard_brake", label: "Hard brake" },
   { type: "overtake", label: "Overtake" },

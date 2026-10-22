@@ -40,7 +40,7 @@ export interface RecorderStatus {
 }
 
 export type ManeuverLabelType =
-  | "lane_change" | "turn" | "harsh_corner" | "hard_brake" | "harsh_accel"
+  | "lane_change" | "turn" | "u_turn" | "harsh_corner" | "hard_brake" | "harsh_accel"
   | "overtake" | "stop" | "wrong_side" | "phone_use" | "other";
 
 export interface RecentLabel {

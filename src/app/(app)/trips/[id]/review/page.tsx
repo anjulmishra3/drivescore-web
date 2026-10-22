@@ -11,6 +11,7 @@ const ACTION_TAGS: { type: string; label: string; dir?: "L" | "R" }[] = [
   { type: "lane_change", label: "Lane ◀ L", dir: "L" },
   { type: "lane_change", label: "Lane R ▶", dir: "R" },
   { type: "turn", label: "Turn" },
+  { type: "u_turn", label: "U-turn" },
   { type: "harsh_corner", label: "Harsh corner" },
   { type: "hard_brake", label: "Hard brake" },
   { type: "harsh_accel", label: "Harsh accel" },
@@ -54,7 +55,7 @@ interface Label {
 }
 
 const TYPES = [
-  "lane_change", "turn", "harsh_corner", "hard_brake", "harsh_accel", "overtake",
+  "lane_change", "turn", "u_turn", "harsh_corner", "hard_brake", "harsh_accel", "overtake",
   "stop", "wrong_side", "phone_use", "speed_limit", "stop_sign", "speed_bump",
   "school_zone", "no_stopping", "traffic_signal", "other",
 ];
