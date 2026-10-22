@@ -39,7 +39,9 @@ export interface RecorderStatus {
   live: { speed_kmh: number | null; accel: number | null; gps: boolean; motion: boolean };
 }
 
-export type ManeuverLabelType = "lane_change" | "turn" | "overtake" | "hard_brake" | "stop" | "other";
+export type ManeuverLabelType =
+  | "lane_change" | "turn" | "harsh_corner" | "hard_brake" | "harsh_accel"
+  | "overtake" | "stop" | "wrong_side" | "phone_use" | "other";
 
 export interface RecentLabel {
   id: string | null;

@@ -84,6 +84,29 @@ export function scoreTrip(samples: TripSample[]): ScoreBreakdown {
   let refSpeed: number | null = null, refT = 0;
   let lastAccelT = -Infinity, lastBrakeT = -Infinity, lastCornerT = -Infinity;
 
+  // --- Focus: detect the phone being picked up off its mount ---
+  // Baseline = the trip's average accelerometer vector ≈ the mounted gravity
+  // direction (vehicle motion averages out). A *sustained* tilt away from it
+  // means the phone left the mount (handled). Transient bumps/potholes don't
+  // shift the smoothed gravity, and the >1s duration gate ignores them.
+  const FOCUS_TILT_DEG = 25;  // deviation that counts as "off the mount"
+  const FOCUS_NEAR_DEG = 15;  // "at the mount" for the mounted-ness check
+  const FOCUS_MIN_S = 1.0;    // min handling duration (rejects bumps)
+  const FOCUS_K = 150;        // focus penalty per fraction of the trip handled
+
+  let bx = 0, by = 0, bz = 0, bn = 0;
+  for (const s of sorted) {
+    if (s.accel_x != null && s.accel_y != null && s.accel_z != null) {
+      bx += s.accel_x; by += s.accel_y; bz += s.accel_z; bn++;
+    }
+  }
+  const haveBase = bn > 0;
+  if (haveBase) { bx /= bn; by /= bn; bz /= bn; }
+  const bMag = Math.hypot(bx, by, bz) || 1;
+
+  let handling = false, handStart = 0, phoneSeconds = 0;
+  let accelSamples = 0, nearBaseline = 0;
+
   for (let i = 1; i < sorted.length; i++) {
     const prev = sorted[i - 1];
     const cur = sorted[i];
@@ -126,6 +149,21 @@ export function scoreTrip(samples: TripSample[]): ScoreBreakdown {
       if ((sp ?? 0) >= CORNER_MIN_KMH && lateral > HARSH_CORNER_G && cur.t_ms - lastCornerT > DEBOUNCE_MS) {
         harshCorner++; lastCornerT = cur.t_ms;
       }
+
+      // focus: tilt of the current gravity vector away from the mount baseline
+      if (haveBase) {
+        accelSamples++;
+        const gMag = Math.hypot(gx, gy, gz) || 1;
+        const cos = Math.max(-1, Math.min(1, (gx * bx + gy * by + gz * bz) / (gMag * bMag)));
+        const devDeg = (Math.acos(cos) * 180) / Math.PI;
+        if (devDeg < FOCUS_NEAR_DEG) nearBaseline++;
+        if (devDeg > FOCUS_TILT_DEG) {
+          if (!handling) { handling = true; handStart = cur.t_ms; }
+        } else if (handling) {
+          if ((cur.t_ms - handStart) / 1000 >= FOCUS_MIN_S) phoneSeconds += (cur.t_ms - handStart) / 1000;
+          handling = false;
+        }
+      }
     }
   }
 
@@ -141,9 +179,15 @@ export function scoreTrip(samples: TripSample[]): ScoreBreakdown {
   const braking = clamp(100 - perKm(harshBrake) * 55);
   const cornering = clamp(100 - perKm(harshCorner) * 45);
   const speeding = clamp(100 - (speedSamples ? (speedingSamples / speedSamples) * 100 : 0));
-  // Focus (phone handling) still has no sensor signal in v0 — needs labeled data
-  // for a classifier. Full marks until then.
-  const focus = 100;
+
+  // Focus: if the phone sat on the mount most of the time (a stable baseline to
+  // deviate from), deduct for the fraction of the trip it was handled; otherwise
+  // we can't judge it, so leave it at 100.
+  if (handling && haveBase && (sorted[sorted.length - 1].t_ms - handStart) / 1000 >= FOCUS_MIN_S) {
+    phoneSeconds += (sorted[sorted.length - 1].t_ms - handStart) / 1000;
+  }
+  const mounted = haveBase && accelSamples > 0 && nearBaseline / accelSamples >= 0.4;
+  const focus = mounted ? clamp(100 - (phoneSeconds / Math.max(durationS, 1)) * FOCUS_K) : 100;
 
   const overall = clamp(smoothness * 0.25 + braking * 0.25 + cornering * 0.2 + speeding * 0.2 + focus * 0.1);
 

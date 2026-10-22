@@ -6,18 +6,28 @@ import dynamic from "next/dynamic";
 import { createClient } from "@/lib/supabase/client";
 import type { MapLabel, RoutePoint } from "@/components/RouteMap";
 
-const ADD_TAGS: { type: string; label: string; dir?: "L" | "R" }[] = [
+// Driver-action labels (events)
+const ACTION_TAGS: { type: string; label: string; dir?: "L" | "R" }[] = [
   { type: "lane_change", label: "Lane ◀ L", dir: "L" },
   { type: "lane_change", label: "Lane R ▶", dir: "R" },
   { type: "turn", label: "Turn" },
-  { type: "overtake", label: "Overtake" },
+  { type: "harsh_corner", label: "Harsh corner" },
   { type: "hard_brake", label: "Hard brake" },
   { type: "harsh_accel", label: "Harsh accel" },
+  { type: "overtake", label: "Overtake" },
   { type: "stop", label: "Stop" },
   { type: "wrong_side", label: "Wrong side" },
   { type: "phone_use", label: "Phone use" },
-  { type: "other", label: "Other" },
 ];
+// Road-context labels (fill gaps the map data is missing); speed_limit carries a value
+const ROAD_TAGS: { type: string; label: string }[] = [
+  { type: "stop_sign", label: "Stop sign" },
+  { type: "speed_bump", label: "Speed bump" },
+  { type: "school_zone", label: "School zone" },
+  { type: "no_stopping", label: "No stopping" },
+  { type: "traffic_signal", label: "Signal" },
+];
+const SPEED_LIMITS = [20, 30, 40, 50, 60, 80, 100];
 
 const RouteMap = dynamic(() => import("@/components/RouteMap"), {
   ssr: false,
@@ -31,13 +41,18 @@ interface Label {
   type: string | null;
   direction: "L" | "R" | null;
   confirmed: boolean | null;
+  value: number | null;
   speed_kmh: number | null;
   lat: number | null;
   lng: number | null;
   meta: { peak_yaw?: number; net_heading?: number; dur_s?: number } | null;
 }
 
-const TYPES = ["lane_change", "turn", "overtake", "hard_brake", "stop", "other"];
+const TYPES = [
+  "lane_change", "turn", "harsh_corner", "hard_brake", "harsh_accel", "overtake",
+  "stop", "wrong_side", "phone_use", "speed_limit", "stop_sign", "speed_bump",
+  "school_zone", "no_stopping", "traffic_signal", "other",
+];
 
 function clock(ms: number) {
   const s = Math.floor(ms / 1000);
@@ -50,6 +65,7 @@ export default function ReviewPage({ params }: { params: { id: string } }) {
   const [route, setRoute] = useState<RoutePoint[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [pendingAdd, setPendingAdd] = useState<RoutePoint | null>(null);
+  const [speedPick, setSpeedPick] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const rowRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -80,15 +96,16 @@ export default function ReviewPage({ params }: { params: { id: string } }) {
   }, []);
 
   // tap a point on the map → choose a type → save a label there
-  const addLabelAt = useCallback(async (type: string, direction: "L" | "R" | null) => {
+  const addLabelAt = useCallback(async (type: string, direction: "L" | "R" | null, value: number | null = null) => {
     const pt = pendingAdd;
     setPendingAdd(null);
+    setSpeedPick(false);
     if (!pt) return;
     await fetch(`/api/trips/${tripId}/labels`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        t_ms: pt.t_ms, source: "manual", type, direction,
+        t_ms: pt.t_ms, source: "manual", type, direction, value,
         lat: pt.lat, lng: pt.lng, speed_kmh: pt.speed_kmh ?? null, confirmed: true,
       }),
     });
@@ -230,6 +247,7 @@ export default function ReviewPage({ params }: { params: { id: string } }) {
                   </div>
                 )}
                 <span className="ml-auto text-xs text-slate-400">
+                  {l.value != null ? `${l.value.toFixed(0)} km/h limit · ` : ""}
                   {l.speed_kmh != null ? `${l.speed_kmh.toFixed(0)} km/h` : ""}
                   {l.meta?.net_heading != null ? ` · ${l.meta.net_heading.toFixed(0)}°` : ""}
                   {l.meta?.peak_yaw != null ? ` · ${l.meta.peak_yaw.toFixed(0)}°/s` : ""}
@@ -249,19 +267,40 @@ export default function ReviewPage({ params }: { params: { id: string } }) {
                 Tag at {Math.floor(pendingAdd.t_ms / 60000)}:{String(Math.floor((pendingAdd.t_ms % 60000) / 1000)).padStart(2, "0")}
                 {pendingAdd.speed_kmh != null ? ` · ${pendingAdd.speed_kmh.toFixed(0)} km/h` : ""}
               </span>
-              <button className="text-xs font-medium text-slate-400 hover:text-slate-700" onClick={() => setPendingAdd(null)}>Cancel</button>
+              <button className="text-xs font-medium text-slate-400 hover:text-slate-700" onClick={() => { setPendingAdd(null); setSpeedPick(false); }}>Cancel</button>
             </div>
-            <div className="grid grid-cols-3 gap-2">
-              {ADD_TAGS.map((t) => (
-                <button
-                  key={t.label}
-                  className="btn-ghost py-2.5 text-xs"
-                  onClick={() => addLabelAt(t.type, t.dir ?? null)}
-                >
-                  {t.label}
-                </button>
-              ))}
-            </div>
+
+            {speedPick ? (
+              <div>
+                <div className="mb-1 text-xs text-slate-400">Speed limit here (km/h):</div>
+                <div className="grid grid-cols-4 gap-2">
+                  {SPEED_LIMITS.map((v) => (
+                    <button key={v} className="btn-ghost py-2.5 text-sm" onClick={() => addLabelAt("speed_limit", null, v)}>{v}</button>
+                  ))}
+                  <button className="btn-ghost py-2.5 text-xs text-slate-400" onClick={() => setSpeedPick(false)}>← back</button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-slate-400">Driver action</div>
+                <div className="grid grid-cols-3 gap-2">
+                  {ACTION_TAGS.map((t) => (
+                    <button key={t.label} className="btn-ghost py-2.5 text-xs" onClick={() => addLabelAt(t.type, t.dir ?? null)}>
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="mb-1 mt-3 text-[11px] font-medium uppercase tracking-wide text-slate-400">Road / sign</div>
+                <div className="grid grid-cols-3 gap-2">
+                  <button className="btn-ghost py-2.5 text-xs font-semibold text-brand-700" onClick={() => setSpeedPick(true)}>Speed limit…</button>
+                  {ROAD_TAGS.map((t) => (
+                    <button key={t.label} className="btn-ghost py-2.5 text-xs" onClick={() => addLabelAt(t.type, null)}>
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}

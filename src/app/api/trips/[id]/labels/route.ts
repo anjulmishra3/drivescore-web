@@ -34,8 +34,9 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   let b: {
-    t_ms?: number; source?: "auto" | "manual"; type?: LabelType;
+    t_ms?: number; source?: "auto" | "manual"; type?: string;
     direction?: "L" | "R" | null; confirmed?: boolean | null;
+    value?: number | null;
     lat?: number | null; lng?: number | null; speed_kmh?: number | null;
     meta?: Record<string, unknown>;
   };
@@ -55,6 +56,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       type: b.type ?? null,
       direction: b.direction ?? null,
       confirmed: b.confirmed ?? null,
+      value: b.value ?? null,
       lat: b.lat ?? null,
       lng: b.lng ?? null,
       speed_kmh: b.speed_kmh ?? null,
