@@ -48,5 +48,14 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     .single();
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ trip });
+
+  // Re-score speeding against real map-matched road limits (replaces the client's
+  // flat-120 fallback). Best-effort: if it times out or the map lacks coverage,
+  // the trip keeps the client score.
+  try {
+    await supabase.rpc("rescore_speeding_mapped", { p_trip: params.id });
+  } catch { /* keep client speeding score */ }
+
+  const { data: scored } = await supabase.from("trips").select("*").eq("id", params.id).single();
+  return NextResponse.json({ trip: scored ?? trip });
 }
