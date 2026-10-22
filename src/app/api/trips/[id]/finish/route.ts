@@ -54,7 +54,8 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   // the trip keeps the client score.
   try {
     await supabase.rpc("rescore_speeding_mapped", { p_trip: params.id });
-  } catch { /* keep client speeding score */ }
+    await supabase.rpc("score_map_discipline", { p_trip: params.id });
+  } catch { /* keep client scores if map scoring times out */ }
 
   const { data: scored } = await supabase.from("trips").select("*").eq("id", params.id).single();
   return NextResponse.json({ trip: scored ?? trip });

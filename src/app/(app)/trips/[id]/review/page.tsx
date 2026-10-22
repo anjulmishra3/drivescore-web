@@ -29,6 +29,11 @@ const ROAD_TAGS: { type: string; label: string }[] = [
 ];
 const SPEED_LIMITS = [20, 30, 40, 50, 60, 80, 100];
 
+interface RoadInfo {
+  fclass: string; name: string | null; ref: string | null; oneway: string;
+  limit_kmh: number | null; bearing: number | null; dist_m: number | null; wrong_side_possible: boolean;
+}
+
 const RouteMap = dynamic(() => import("@/components/RouteMap"), {
   ssr: false,
   loading: () => <div className="h-72 w-full animate-pulse rounded-xl bg-slate-100" />,
@@ -66,6 +71,7 @@ export default function ReviewPage({ params }: { params: { id: string } }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [pendingAdd, setPendingAdd] = useState<RoutePoint | null>(null);
   const [speedPick, setSpeedPick] = useState(false);
+  const [roadInfo, setRoadInfo] = useState<RoadInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const rowRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -93,6 +99,16 @@ export default function ReviewPage({ params }: { params: { id: string } }) {
   const selectFromMap = useCallback((id: string) => {
     setSelectedId(id);
     rowRefs.current[id]?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, []);
+
+  // tap a point → stash it and fetch the live road context from PostGIS
+  const onAddAt = useCallback(async (p: RoutePoint) => {
+    setPendingAdd(p); setSpeedPick(false); setRoadInfo(null);
+    try {
+      const supabase = createClient();
+      const { data } = await supabase.rpc("road_context", { p_lat: p.lat, p_lng: p.lng });
+      if (Array.isArray(data) && data[0]) setRoadInfo(data[0] as RoadInfo);
+    } catch { /* map lookup is best-effort */ }
   }, []);
 
   // tap a point on the map → choose a type → save a label there
@@ -161,7 +177,7 @@ export default function ReviewPage({ params }: { params: { id: string } }) {
             labels={mapLabels}
             selectedId={selectedId}
             onSelect={selectFromMap}
-            onAddAt={(p) => setPendingAdd(p)}
+            onAddAt={onAddAt}
             highlight={pendingAdd}
           />
           <div className="mt-2 flex items-center justify-center gap-3 text-xs text-slate-400">
@@ -270,15 +286,29 @@ export default function ReviewPage({ params }: { params: { id: string } }) {
               <button className="text-xs font-medium text-slate-400 hover:text-slate-700" onClick={() => { setPendingAdd(null); setSpeedPick(false); }}>Cancel</button>
             </div>
 
+            {/* live road context from the map */}
+            {roadInfo && (
+              <div className="mb-2 rounded-lg bg-brand-50 px-3 py-1.5 text-xs text-brand-900">
+                📍 {roadInfo.ref ? roadInfo.ref + " · " : ""}{roadInfo.name ?? roadInfo.fclass}
+                {" · "}{roadInfo.limit_kmh ?? "?"} km/h{roadInfo.oneway === "F" ? " · one-way" : ""}
+              </div>
+            )}
+
             {speedPick ? (
               <div>
                 <div className="mb-1 text-xs text-slate-400">Speed limit here (km/h):</div>
                 <div className="grid grid-cols-4 gap-2">
-                  {SPEED_LIMITS.map((v) => (
+                  {roadInfo?.limit_kmh && (
+                    <button className="btn-primary py-2.5 text-sm" onClick={() => addLabelAt("speed_limit", null, roadInfo.limit_kmh)}>
+                      {roadInfo.limit_kmh}*
+                    </button>
+                  )}
+                  {SPEED_LIMITS.filter((v) => v !== roadInfo?.limit_kmh).map((v) => (
                     <button key={v} className="btn-ghost py-2.5 text-sm" onClick={() => addLabelAt("speed_limit", null, v)}>{v}</button>
                   ))}
                   <button className="btn-ghost py-2.5 text-xs text-slate-400" onClick={() => setSpeedPick(false)}>← back</button>
                 </div>
+                {roadInfo?.limit_kmh && <div className="mt-1 text-[10px] text-slate-400">* map&apos;s current value</div>}
               </div>
             ) : (
               <>

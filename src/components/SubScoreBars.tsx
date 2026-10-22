@@ -7,7 +7,8 @@ export default function SubScoreBars({ trip }: { trip: Partial<Trip> }) {
     <div className="space-y-3">
       {SUB_SCORES.map(({ key, label, hint }) => {
         const value = (trip[key as keyof Trip] as number | null) ?? null;
-        const pct = value ?? 0;
+        if (value == null) return null; // not computed (e.g. map scores on a GPS-less trip)
+        const pct = value;
         return (
           <div key={key}>
             <div className="mb-1 flex items-baseline justify-between">

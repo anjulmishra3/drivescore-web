@@ -47,6 +47,10 @@ export interface Trip {
   score_cornering: number | null;
   score_speeding: number | null;
   score_focus: number | null;
+  score_wrong_side: number | null;
+  score_stops: number | null;
+  wrong_side_events: number | null;
+  illegal_stops: number | null;
   event_count: number;
   created_at: string;
 }
@@ -80,10 +84,12 @@ export interface ScoreBreakdown {
   max_speed_kmh: number;
 }
 
-export const SUB_SCORES: { key: keyof ScoreBreakdown; label: string; hint: string }[] = [
+export const SUB_SCORES: { key: string; label: string; hint: string }[] = [
   { key: "score_smoothness", label: "Smoothness", hint: "Gentle acceleration" },
   { key: "score_braking", label: "Braking", hint: "No harsh stops" },
   { key: "score_cornering", label: "Cornering", hint: "Smooth turns" },
-  { key: "score_speeding", label: "Speed", hint: "Within limits" },
+  { key: "score_speeding", label: "Speed", hint: "Within road limits" },
   { key: "score_focus", label: "Focus", hint: "No phone handling" },
+  { key: "score_wrong_side", label: "Lane side", hint: "Correct side of road" },
+  { key: "score_stops", label: "Stops", hint: "No stopping in no-stop zones" },
 ];
