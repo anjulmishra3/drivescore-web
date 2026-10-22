@@ -109,6 +109,18 @@ export default function RecordPage() {
             ⚠️ Keep this screen on and the tab in front. Locking the phone or switching apps pauses recording.
           </div>
 
+          {/* GPS status — detection needs location */}
+          {status.gpsError ? (
+            <div className="card border-red-300 bg-red-50 text-sm font-medium text-red-800">
+              📍 {status.gpsError}
+            </div>
+          ) : !status.gotGpsFix && status.elapsed > 12 ? (
+            <div className="card border-red-300 bg-red-50 text-sm font-medium text-red-800">
+              📍 No GPS fix yet. Maneuver detection won&apos;t run without location — check that location
+              access is allowed and the phone has a clear view of the sky.
+            </div>
+          ) : null}
+
           <div className="card grid grid-cols-3 gap-3 text-sm">
             <Stat label="Captured" value={status.captured.toLocaleString()} />
             <Stat label="Uploaded" value={status.uploaded.toLocaleString()} tone="good" />

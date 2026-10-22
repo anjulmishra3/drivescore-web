@@ -24,7 +24,7 @@ export interface ManeuverEvent {
 }
 
 interface Lobe {
-  sign: number; net: number; peak: number;
+  sign: number; net: number; peak: number; peakSpeed: number;
   startT: number; endT: number; speed: number | null;
   lat: number | null; lng: number | null;
 }
@@ -32,7 +32,9 @@ interface Lobe {
 const GRAV_ALPHA = 0.04;   // ~1s gravity time constant at 25 Hz
 const SMOOTH_N = 13;       // ~0.5s yaw smoothing
 const TH = 3;              // deg/s — lobe on/off threshold
-const SPEED_GATE = 25;     // km/h — only judge while driving
+const FORM_MIN_KMH = 4;    // only form lobes while actually rolling (skip standstill jitter)
+const TURN_MIN_KMH = 8;    // a turn must reach at least this peak speed to count
+const LC_MIN_KMH = 15;     // a lane change must reach at least this peak speed
 const CLOSE_MS = 300;      // below-threshold time that ends a lobe
 const TURN_DEG = 35;       // net heading that marks a turn
 const PAIR_GAP_MS = 2500;  // max gap between the two lobes of a lane change
@@ -70,19 +72,20 @@ export class LiveManeuverDetector {
     const dt = this.lastT == null ? 0 : (s.t_ms - this.lastT) / 1000;
     this.lastT = s.t_ms;
 
-    const moving = (s.speed_kmh ?? 0) >= SPEED_GATE;
-    const active = moving && Math.abs(yaw) > TH;
+    const spd = s.speed_kmh ?? 0;
+    const active = spd >= FORM_MIN_KMH && Math.abs(yaw) > TH;
 
     if (active) {
       this.belowSince = null;
       const sgn = Math.sign(yaw);
       if (!this.cur || this.cur.sign !== sgn) {
         if (this.cur) this.closeLobe(s);          // sign flipped → close & start new
-        this.cur = { sign: sgn, net: 0, peak: 0, startT: s.t_ms, endT: s.t_ms,
+        this.cur = { sign: sgn, net: 0, peak: 0, peakSpeed: spd, startT: s.t_ms, endT: s.t_ms,
                      speed: s.speed_kmh, lat: s.lat, lng: s.lng };
       }
       this.cur.net += yaw * dt;
       this.cur.peak = Math.max(this.cur.peak, Math.abs(yaw));
+      this.cur.peakSpeed = Math.max(this.cur.peakSpeed, spd);
       this.cur.endT = s.t_ms;
       this.cur.speed = s.speed_kmh;
       this.cur.lat = s.lat; this.cur.lng = s.lng;
@@ -100,8 +103,8 @@ export class LiveManeuverDetector {
 
     const netAbs = Math.abs(lobe.net);
 
-    // Turn: large net heading change.
-    if (netAbs >= TURN_DEG) {
+    // Turn: large net heading change, reached a real driving speed.
+    if (netAbs >= TURN_DEG && lobe.peakSpeed >= TURN_MIN_KMH) {
       this.emit("turn", lobe);
       this.prevLobe = lobe;
       return;
@@ -115,13 +118,14 @@ export class LiveManeuverDetector {
         Math.abs(p.net) >= 3 && Math.abs(p.net) <= 20 &&
         netAbs >= 3 && netAbs <= 20 &&
         Math.abs(p.net + lobe.net) <= 0.5 * (Math.abs(p.net) + netAbs) &&
-        Math.min(p.speed ?? 0, lobe.speed ?? 0) >= 30 &&
+        Math.max(p.peakSpeed, lobe.peakSpeed) >= LC_MIN_KMH &&
         lobe.startT - this.lastPairT > 3000) {
       this.lastPairT = lobe.startT;
       const merged: Lobe = {
         sign: lobe.sign,
         net: p.net + lobe.net,
         peak: Math.max(p.peak, lobe.peak),
+        peakSpeed: Math.max(p.peakSpeed, lobe.peakSpeed),
         startT: p.startT, endT: lobe.endT,
         speed: lobe.speed, lat: lobe.lat, lng: lobe.lng,
       };

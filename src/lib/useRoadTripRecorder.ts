@@ -33,6 +33,8 @@ export interface RecorderStatus {
   wakeLock: boolean;
   hz: number;
   error: string | null;
+  gpsError: string | null; // location permission denied / unavailable
+  gotGpsFix: boolean;      // at least one position fix received this trip
   recoverable: boolean; // an interrupted trip was found on load
   live: { speed_kmh: number | null; accel: number | null; gps: boolean; motion: boolean };
 }
@@ -56,7 +58,7 @@ export interface PendingPrompt {
 export function useRoadTripRecorder(hz = 25) {
   const [status, setStatus] = useState<RecorderStatus>({
     state: "idle", tripId: null, elapsed: 0, captured: 0, uploaded: 0, pending: 0,
-    online: true, wakeLock: false, hz, error: null, recoverable: false,
+    online: true, wakeLock: false, hz, error: null, gpsError: null, gotGpsFix: false, recoverable: false,
     live: { speed_kmh: null, accel: null, gps: false, motion: false },
   });
 
@@ -106,13 +108,32 @@ export function useRoadTripRecorder(hz = 25) {
     }
   }, []);
 
+  const lastFix = useRef<{ lat: number; lng: number; t: number } | null>(null);
   const onPosition = useCallback((pos: GeolocationPosition) => {
-    latest.current = {
-      ...latest.current,
-      lat: pos.coords.latitude,
-      lng: pos.coords.longitude,
-      speed_kmh: pos.coords.speed != null ? Math.max(0, pos.coords.speed * 3.6) : latest.current.speed_kmh,
-    };
+    const lat = pos.coords.latitude, lng = pos.coords.longitude, t = pos.timestamp;
+
+    // Prefer the device-reported speed; fall back to speed derived from the
+    // distance between consecutive fixes (many phones, iOS especially, leave
+    // coords.speed null even while moving).
+    let speed_kmh = latest.current.speed_kmh ?? null;
+    if (pos.coords.speed != null && pos.coords.speed >= 0) {
+      speed_kmh = pos.coords.speed * 3.6;
+    } else if (lastFix.current) {
+      const dt = (t - lastFix.current.t) / 1000;
+      if (dt > 0) {
+        const R = 6371, toRad = Math.PI / 180;
+        const dLat = (lat - lastFix.current.lat) * toRad;
+        const dLng = (lng - lastFix.current.lng) * toRad;
+        const a = Math.sin(dLat / 2) ** 2 +
+          Math.cos(lastFix.current.lat * toRad) * Math.cos(lat * toRad) * Math.sin(dLng / 2) ** 2;
+        const km = 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
+        speed_kmh = (km / dt) * 3600;
+      }
+    }
+    lastFix.current = { lat, lng, t };
+
+    latest.current = { ...latest.current, lat, lng, speed_kmh };
+    setStatus((s) => (s.gotGpsFix ? s : { ...s, gotGpsFix: true, gpsError: null }));
   }, []);
 
   // --- network flush: IndexedDB -> server ---
@@ -267,9 +288,17 @@ export function useRoadTripRecorder(hz = 25) {
     detectorRef.current = new LiveManeuverDetector((e) => { void handleAutoEvent(e); });
 
     window.addEventListener("devicemotion", onMotion);
-    geoWatch.current = navigator.geolocation.watchPosition(onPosition, () => {}, {
-      enableHighAccuracy: true, maximumAge: 1000, timeout: 15000,
-    });
+    lastFix.current = null;
+    geoWatch.current = navigator.geolocation.watchPosition(
+      onPosition,
+      (err) => {
+        const msg = err.code === err.PERMISSION_DENIED
+          ? "Location blocked — allow location access for this site (maneuver detection needs GPS)."
+          : `Location unavailable (${err.message}).`;
+        patch({ gpsError: msg });
+      },
+      { enableHighAccuracy: true, maximumAge: 1000, timeout: 15000 }
+    );
 
     samplerRef.current = setInterval(() => {
       const l = latest.current;
@@ -360,7 +389,7 @@ export function useRoadTripRecorder(hz = 25) {
       });
       await acquireWake();
       beginLoops();
-      patch({ state: "recording", tripId: trip.id, error: null, recoverable: false });
+      patch({ state: "recording", tripId: trip.id, error: null, gpsError: null, gotGpsFix: false, recoverable: false });
     } catch (e) {
       patch({ state: "error", error: (e as Error).message });
     }
@@ -416,7 +445,7 @@ export function useRoadTripRecorder(hz = 25) {
       startMsRef.current = Date.now() - 0; // elapsed restarts; t_ms stays monotonic via seq order
       await acquireWake();
       beginLoops();
-      patch({ state: "recording", tripId, recoverable: false, error: null });
+      patch({ state: "recording", tripId, recoverable: false, error: null, gpsError: null, gotGpsFix: false });
     } catch (e) {
       patch({ state: "error", error: (e as Error).message });
     }
