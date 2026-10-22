@@ -64,24 +64,25 @@ export function scoreTrip(samples: TripSample[]): ScoreBreakdown {
 
   let distanceKm = 0;
   let maxSpeed = 0;
-  let harshAccel = 0;
-  let harshBrake = 0;
-  let harshCorner = 0;
-  let speedingSamples = 0;
-  let speedSamples = 0;
-  let events = 0;
+  let harshAccel = 0, harshBrake = 0, harshCorner = 0;
+  let speedingSamples = 0, speedSamples = 0;
 
-  // Gravity is removed with a slow per-axis exponential moving average: the
-  // steady tilt of a mounted phone converges into (gx,gy,gz), and subtracting
-  // it leaves the *dynamic* (linear) acceleration. Without this, a tilted mount
-  // reads its constant gravity component as permanent "hard cornering".
+  // Gravity is removed with a slow per-axis exponential moving average so a
+  // tilted mount's constant gravity component isn't read as permanent cornering.
   let gx: number | null = null, gy = 0, gz = 0;
-  const GRAV_ALPHA = 0.02; // ~ how fast the gravity estimate tracks tilt changes
+  const GRAV_ALPHA = 0.02;
 
-  // Only judge driving events while actually moving — GPS speed jitters at a
-  // standstill and would otherwise fabricate harsh accel/brake events.
   const MOVING_KMH = 4;
   const CORNER_MIN_KMH = 8;
+  const DEBOUNCE_MS = 1500;    // a sustained harsh action counts as ONE event
+  const MAX_ACCEL_GAP_S = 5;   // don't differentiate speed across recording gaps
+
+  // Longitudinal g is derived from GPS speed, but GPS updates ~1 Hz while we
+  // sample at 25 Hz. Differentiating every 40 ms sample turns each 1 Hz speed
+  // update into a false spike (the old smoothness/braking = 0 bug). So we only
+  // differentiate across *actual* speed changes, over the real elapsed time.
+  let refSpeed: number | null = null, refT = 0;
+  let lastAccelT = -Infinity, lastBrakeT = -Infinity, lastCornerT = -Infinity;
 
   for (let i = 1; i < sorted.length; i++) {
     const prev = sorted[i - 1];
@@ -89,67 +90,62 @@ export function scoreTrip(samples: TripSample[]): ScoreBreakdown {
     const dt = (cur.t_ms - prev.t_ms) / 1000;
     if (dt <= 0) continue;
 
-    // add distance unless the step is a GPS teleport: small steps are always
-    // fine (incl. slow-GPS-vs-fast-sampling jumps); a large step is kept only if
-    // its implied speed over the elapsed gap is still plausible.
     const stepKm = haversineKm(prev, cur);
     if (stepKm <= MAX_STEP_KM || stepKm / (dt / 3600) <= MAX_PLAUSIBLE_KMH) {
       distanceKm += stepKm;
     }
 
-    const moving = (cur.speed_kmh ?? 0) >= MOVING_KMH;
-
-    // longitudinal acceleration from GPS speed (km/h -> m/s), while moving
-    if (cur.speed_kmh != null && prev.speed_kmh != null && cur.speed_kmh <= MAX_PLAUSIBLE_KMH) {
-      maxSpeed = Math.max(maxSpeed, cur.speed_kmh);
-      if (moving) {
-        const dv = ((cur.speed_kmh - prev.speed_kmh) * 1000) / 3600;
-        const aLong = dv / dt / G; // in g
-        if (aLong > HARSH_ACCEL_G) { harshAccel++; events++; }
-        if (-aLong > HARSH_BRAKE_G) { harshBrake++; events++; }
+    const sp = cur.speed_kmh;
+    if (sp != null && sp <= MAX_PLAUSIBLE_KMH) {
+      maxSpeed = Math.max(maxSpeed, sp);
+      if (sp >= MOVING_KMH) {
         speedSamples++;
-        if (cur.speed_kmh > SPEED_LIMIT_KMH) speedingSamples++;
+        if (sp > SPEED_LIMIT_KMH) speedingSamples++;
+      }
+      // de-aliased longitudinal: evaluate only when GPS speed actually changes
+      if (refSpeed == null) { refSpeed = sp; refT = cur.t_ms; }
+      else if (sp !== refSpeed) {
+        const gap = (cur.t_ms - refT) / 1000;
+        if (gap > 0 && gap <= MAX_ACCEL_GAP_S && sp >= MOVING_KMH) {
+          const aLong = ((sp - refSpeed) * 1000) / 3600 / gap / G; // g
+          if (aLong > HARSH_ACCEL_G && cur.t_ms - lastAccelT > DEBOUNCE_MS) { harshAccel++; lastAccelT = cur.t_ms; }
+          if (-aLong > HARSH_BRAKE_G && cur.t_ms - lastBrakeT > DEBOUNCE_MS) { harshBrake++; lastBrakeT = cur.t_ms; }
+        }
+        refSpeed = sp; refT = cur.t_ms;
       }
     }
 
-    // cornering from gravity-removed device acceleration, only while moving fast
-    // enough for a turn to be meaningful
+    // cornering from gravity-removed lateral accel, debounced into events
     if (cur.accel_x != null && cur.accel_y != null && cur.accel_z != null) {
       if (gx == null) { gx = cur.accel_x; gy = cur.accel_y; gz = cur.accel_z; }
       gx += GRAV_ALPHA * (cur.accel_x - gx);
       gy += GRAV_ALPHA * (cur.accel_y - gy);
       gz += GRAV_ALPHA * (cur.accel_z - gz);
       const lx = cur.accel_x - gx, ly = cur.accel_y - gy;
-      const lateral = Math.sqrt(lx ** 2 + ly ** 2) / G; // linear horizontal, in g
-      if ((cur.speed_kmh ?? 0) >= CORNER_MIN_KMH && lateral > HARSH_CORNER_G) {
-        harshCorner++; events++;
+      const lateral = Math.sqrt(lx ** 2 + ly ** 2) / G;
+      if ((sp ?? 0) >= CORNER_MIN_KMH && lateral > HARSH_CORNER_G && cur.t_ms - lastCornerT > DEBOUNCE_MS) {
+        harshCorner++; lastCornerT = cur.t_ms;
       }
     }
   }
 
+  const events = harshAccel + harshBrake + harshCorner;
   const durationS = Math.round((sorted[sorted.length - 1].t_ms - sorted[0].t_ms) / 1000);
-  // Scale penalties per km, with a floor so a very short trip can't explode the
-  // rate. Real drives have plenty of distance, so this only guards tiny tests.
   const distanceForRate = Math.max(distanceKm, 1);
   const perKm = (n: number) => n / distanceForRate;
 
-  const smoothness = clamp(100 - perKm(harshAccel) * 12);
-  const braking = clamp(100 - perKm(harshBrake) * 14);
-  const cornering = clamp(100 - perKm(harshCorner) * 12);
-  const speeding = clamp(
-    100 - (speedSamples ? (speedingSamples / speedSamples) * 100 : 0)
-  );
-  // Focus (phone handling) can't be measured from these sensors in v0; assume
-  // full marks. v1 gets this from the OBD/device pipeline.
+  // Penalty per harsh event per km. Events are now debounced discrete maneuvers,
+  // so these weights are much larger than the old per-sample multipliers.
+  // Provisional — to be calibrated against labeled ground truth.
+  const smoothness = clamp(100 - perKm(harshAccel) * 50);
+  const braking = clamp(100 - perKm(harshBrake) * 55);
+  const cornering = clamp(100 - perKm(harshCorner) * 45);
+  const speeding = clamp(100 - (speedSamples ? (speedingSamples / speedSamples) * 100 : 0));
+  // Focus (phone handling) still has no sensor signal in v0 — needs labeled data
+  // for a classifier. Full marks until then.
   const focus = 100;
 
-  const overall = clamp(
-    smoothness * 0.25 +
-      braking * 0.25 +
-      cornering * 0.2 +
-      speeding * 0.2 +
-      focus * 0.1
-  );
+  const overall = clamp(smoothness * 0.25 + braking * 0.25 + cornering * 0.2 + speeding * 0.2 + focus * 0.1);
 
   return {
     overall_score: overall,
