@@ -38,6 +38,10 @@ const LC_MIN_KMH = 15;     // a lane change must reach at least this peak speed
 const CLOSE_MS = 300;      // below-threshold time that ends a lobe
 const TURN_DEG = 35;       // net heading that marks a turn
 const PAIR_GAP_MS = 2500;  // max gap between the two lobes of a lane change
+// Minimum maneuver duration. Calibrated on reviewed labels (2026-10): real
+// turns/lane-changes ran ≥2.8 s, while every rejected false positive was ≤1.4 s
+// (brief jolts/wobbles). A 2 s floor cleanly separates them.
+const MIN_EVENT_S = 2.0;
 
 export class LiveManeuverDetector {
   private gx: number | null = null; private gy = 0; private gz = 0;
@@ -103,8 +107,9 @@ export class LiveManeuverDetector {
 
     const netAbs = Math.abs(lobe.net);
 
-    // Turn: large net heading change, reached a real driving speed.
-    if (netAbs >= TURN_DEG && lobe.peakSpeed >= TURN_MIN_KMH) {
+    // Turn: large net heading change, reached a real driving speed, and lasted
+    // long enough to be a real maneuver (not a brief jolt).
+    if (netAbs >= TURN_DEG && lobe.peakSpeed >= TURN_MIN_KMH && durS >= MIN_EVENT_S) {
       this.emit("turn", lobe);
       this.prevLobe = lobe;
       return;
@@ -119,6 +124,7 @@ export class LiveManeuverDetector {
         netAbs >= 3 && netAbs <= 20 &&
         Math.abs(p.net + lobe.net) <= 0.5 * (Math.abs(p.net) + netAbs) &&
         Math.max(p.peakSpeed, lobe.peakSpeed) >= LC_MIN_KMH &&
+        (lobe.endT - p.startT) / 1000 >= MIN_EVENT_S &&
         lobe.startT - this.lastPairT > 3000) {
       this.lastPairT = lobe.startT;
       const merged: Lobe = {
