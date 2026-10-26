@@ -263,6 +263,17 @@ export default function ReviewPage({ params }: { params: { id: string } }) {
                     ))}
                   </div>
                 )}
+                {l.type === "speed_limit" && (
+                  <div className="flex flex-wrap gap-1">
+                    {SPEED_LIMITS.map((v) => (
+                      <button
+                        key={v}
+                        className={`rounded-lg px-2 py-1.5 text-xs ${l.value === v ? "bg-brand-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}
+                        onClick={() => patch(l.id, { value: v })}
+                      >{v}</button>
+                    ))}
+                  </div>
+                )}
                 <span className="ml-auto text-xs text-slate-400">
                   {l.value != null ? `${l.value.toFixed(0)} km/h limit · ` : ""}
                   {l.speed_kmh != null ? `${l.speed_kmh.toFixed(0)} km/h` : ""}

@@ -43,11 +43,16 @@ export default function RouteMap({
   const lineRef = useRef<Polyline | null>(null);
   const hitRef = useRef<Polyline | null>(null);
   const tempRef = useRef<CircleMarker | null>(null);
-  // keep latest route/handler without re-binding the map click
+  // keep latest route/labels/handlers without re-binding the map click
   const routeRef = useRef<RoutePoint[]>(route);
+  const labelsRef = useRef<MapLabel[]>(labels);
   const addRef = useRef<typeof onAddAt>(onAddAt);
+  const selectRef = useRef(onSelect);
+  const fittedRef = useRef(false);
   routeRef.current = route;
+  labelsRef.current = labels;
   addRef.current = onAddAt;
+  selectRef.current = onSelect;
 
   function nearest(lat: number, lng: number): RoutePoint | null {
     let best: RoutePoint | null = null, bd = Infinity;
@@ -58,20 +63,33 @@ export default function RouteMap({
     return best;
   }
 
+  // A click near an existing label selects it (→ its tile); otherwise it adds a
+  // new label at the nearest route point. Proximity is measured in screen pixels
+  // so it's zoom-independent.
+  function handleClick(latlng: { lat: number; lng: number }) {
+    const map = mapRef.current;
+    if (!map) return;
+    const clickPt = map.latLngToContainerPoint([latlng.lat, latlng.lng]);
+    let bestId: string | null = null, bestPx = Infinity;
+    for (const l of labelsRef.current) {
+      if (l.lat == null || l.lng == null) continue;
+      const d = clickPt.distanceTo(map.latLngToContainerPoint([l.lat, l.lng]));
+      if (d < bestPx) { bestPx = d; bestId = l.id; }
+    }
+    if (bestId && bestPx <= 22) { selectRef.current(bestId); return; }
+    if (addRef.current) { const p = nearest(latlng.lat, latlng.lng); if (p) addRef.current(p); }
+  }
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
       const L = (await import("leaflet")).default;
       if (cancelled || !elRef.current || mapRef.current) return;
-      const map = L.map(elRef.current, { zoomControl: true });
+      const map = L.map(elRef.current, { zoomControl: true, scrollWheelZoom: false });
       L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
         maxZoom: 19, attribution: "© OpenStreetMap",
       }).addTo(map);
-      map.on("click", (e: { latlng: { lat: number; lng: number } }) => {
-        if (!addRef.current) return;
-        const p = nearest(e.latlng.lat, e.latlng.lng);
-        if (p) addRef.current(p);
-      });
+      map.on("click", (e: { latlng: { lat: number; lng: number } }) => handleClick(e.latlng));
       mapRef.current = map;
       draw(L);
     })();
@@ -122,11 +140,7 @@ export default function RouteMap({
       lineRef.current = L.polyline(coords, { color: "#1f66f5", weight: 3, opacity: 0.85 }).addTo(map);
       // wide invisible hit line so tapping near the route registers
       hitRef.current = L.polyline(coords, { color: "#000", weight: 22, opacity: 0 }).addTo(map);
-      hitRef.current.on("click", (e: { latlng: { lat: number; lng: number } }) => {
-        if (!addRef.current) return;
-        const p = nearest(e.latlng.lat, e.latlng.lng);
-        if (p) addRef.current(p);
-      });
+      hitRef.current.on("click", (e: { latlng: { lat: number; lng: number } }) => handleClick(e.latlng));
     }
 
     for (const l of labels) {
@@ -139,12 +153,17 @@ export default function RouteMap({
       markersRef.current[l.id] = m;
     }
 
-    const b = lineRef.current?.getBounds();
-    if (b && b.isValid()) map.fitBounds(b, { padding: [30, 30] });
-    else if (labels.some((l) => l.lat != null)) {
-      const pts = labels.filter((l) => l.lat != null).map((l) => [l.lat!, l.lng!] as [number, number]);
-      map.fitBounds(L.latLngBounds(pts), { padding: [40, 40], maxZoom: 15 });
-    } else map.setView([15.3, 73.9], 11);
+    // Fit the view only on the first draw; afterwards keep the user's zoom/pan so
+    // editing labels (which re-renders) doesn't reset the map.
+    if (!fittedRef.current) {
+      const b = lineRef.current?.getBounds();
+      if (b && b.isValid()) { map.fitBounds(b, { padding: [30, 30] }); fittedRef.current = true; }
+      else if (labels.some((l) => l.lat != null)) {
+        const pts = labels.filter((l) => l.lat != null).map((l) => [l.lat!, l.lng!] as [number, number]);
+        map.fitBounds(L.latLngBounds(pts), { padding: [40, 40], maxZoom: 15 });
+        fittedRef.current = true;
+      } else map.setView([15.3, 73.9], 11);
+    }
   }
 
   return <div ref={elRef} className="h-80 w-full rounded-xl" style={{ zIndex: 0 }} />;

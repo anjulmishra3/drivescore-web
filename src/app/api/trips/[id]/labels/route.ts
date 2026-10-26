@@ -73,7 +73,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   const { supabase, user } = await requireUser();
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  let b: { label_id?: string; confirmed?: boolean; type?: LabelType; direction?: "L" | "R" | null };
+  let b: { label_id?: string; confirmed?: boolean; type?: string; direction?: "L" | "R" | null; value?: number | null };
   try { b = await req.json(); } catch { return NextResponse.json({ error: "invalid json" }, { status: 400 }); }
   if (!b.label_id) return NextResponse.json({ error: "label_id required" }, { status: 400 });
 
@@ -81,6 +81,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   if (b.confirmed !== undefined) patch.confirmed = b.confirmed;
   if (b.type !== undefined) patch.type = b.type;
   if (b.direction !== undefined) patch.direction = b.direction;
+  if (b.value !== undefined) patch.value = b.value;
 
   const { error } = await supabase
     .from("trip_labels")
