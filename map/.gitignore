@@ -1,0 +1,5 @@
+# Secret: direct DB connection string for load_map.py (never commit)
+.db_url
+# Large / regenerable data
+*.gpkg
+batches/

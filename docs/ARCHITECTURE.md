@@ -91,7 +91,7 @@ authoritative overall.
 5. Survives reload (resume), signal loss (local buffer + retry), and screen-off is mitigated by a
    Wake Lock (foreground only — true background is the native-app job).
 
-## Map pipeline (offline workspace: `~/Desktop/sae/map/`, not in git)
+## Map pipeline (in-repo: `map/`, see `map/README.md`)
 
 ```
 clip_goa.py       western-zone.gpkg → goa.gpkg (bbox clip)

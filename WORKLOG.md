@@ -73,7 +73,7 @@ trip `efe33f89-…` (143k samples @25 Hz) and the 61 km trip `283396a8-…`.
 ### Phase 6 — Map integration (OSM → PostGIS)
 - Source: Geofabrik OSM GeoPackage (western India) at
   `~/Downloads/western-zone-261005-free.gpkg/western-zone.gpkg`.
-- Clipped to Goa → `~/Desktop/sae/map/goa.gpkg` (`clip_goa.py`): 38k roads, 1k POIs.
+- Clipped to Goa → `map/goa.gpkg` (`clip_goa.py`): 38k roads, 1k POIs.
 - Offline map-matching prototype (`match_goa.py`) proved **~1.9 m median** accuracy — validating
   that road-level matching works despite ~10 m GPS (lane-level still impossible).
 - Loaded into Supabase **PostGIS** (`load_map.py`, via a direct DB connection):
@@ -118,5 +118,5 @@ trip `efe33f89-…` (143k samples @25 Hz) and the 61 km trip `283396a8-…`.
   few minutes). Data survives.
 - **iOS** is untested beyond GPS; motion works but needs Safari Location Services on; screen must
   stay on (Wake Lock 16.4+).
-- Map data load needs a direct DB connection string in `~/Desktop/sae/map/.db_url` (deletable after
+- Map data load needs a direct DB connection string in `map/.db_url` (deletable after
   load); the app itself never uses it.

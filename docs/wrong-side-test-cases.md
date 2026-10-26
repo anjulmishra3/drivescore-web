@@ -20,7 +20,7 @@ cases to re-test whenever that logic changes.
   GPS matched to the carriageway digitized as NW-bound → a 180° "wrong-side" reading.
 - **Why it's a false positive:** the driver was on the correct side of a divided road and
   performing a legal turnaround — not driving against traffic.
-- **Plot:** `~/Desktop/sae/map/wrongside.png` (path = out-and-back; orange = NH66 one-way).
+- **Plot:** `map/wrongside.png` (path = out-and-back; orange = NH66 one-way).
 
 ### Current handling (2026-10-23)
 A **parallel-carriageway confidence factor** was added: if a one-way road going roughly the
