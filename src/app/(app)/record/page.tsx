@@ -221,8 +221,11 @@ export default function RecordPage() {
 
       {/* ── Floating detection prompt (Netflix-style auto-dismiss) ── */}
       {labels.pending && (
-        <div className="fixed inset-x-0 bottom-5 z-50 mx-auto max-w-md px-4">
-          <div className="overflow-hidden rounded-2xl border border-brand-300 bg-white shadow-2xl">
+        <div
+          className="fixed inset-x-0 z-50 mx-auto max-w-md px-4"
+          style={{ bottom: "calc(4.5rem + env(safe-area-inset-bottom))" }}
+        >
+          <div className="overflow-hidden rounded-2xl border-2 border-brand-400 bg-white shadow-2xl ring-4 ring-brand-500/20">
             <div className="p-4">
               <div className="flex items-baseline justify-between">
                 <div className="text-lg font-bold text-slate-900">
