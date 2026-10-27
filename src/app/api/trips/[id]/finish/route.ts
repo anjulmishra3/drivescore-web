@@ -52,9 +52,8 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   // NOTE: the map-based scoring (speeding vs real limits, wrong-side, no-stop-zone)
   // is deliberately NOT run here. Those PostGIS functions do hundreds of spatial
   // queries and routinely exceed the serverless timeout, which made the whole
-  // finish request fail on the client. They now run out-of-band via the
-  // `score_pending_map` pg_cron job (~every minute) on completed trips whose map
-  // scores are still null. Finish just records the trip + client sensor score and
-  // returns immediately.
+  // finish request fail on the client. The client triggers them separately via
+  // `POST /api/trips/:id/map-score` once this returns. Finish just records the
+  // trip + client sensor score and returns immediately.
   return NextResponse.json({ trip });
 }

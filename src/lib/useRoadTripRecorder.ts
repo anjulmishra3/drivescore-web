@@ -430,6 +430,13 @@ export function useRoadTripRecorder(hz = 25) {
       return { ok: false, remaining, tripId };
     }
 
+    // Kick off the heavy map-based scoring separately. The drive is already
+    // saved and ended, so this is best-effort: keepalive lets it survive the
+    // page navigating away, and we don't await the spatial work.
+    try {
+      fetch(`/api/trips/${tripId}/map-score`, { method: "POST", keepalive: true }).catch(() => {});
+    } catch {}
+
     if (wakeRef.current) { try { await wakeRef.current.release(); } catch {} wakeRef.current = null; }
     await deleteTrip(tripId);
     patch({ state: "done", pending: remaining, wakeLock: false });
