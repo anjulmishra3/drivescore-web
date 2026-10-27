@@ -49,14 +49,12 @@ export async function POST(req: Request, { params }: { params: { id: string } })
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  // Re-score speeding against real map-matched road limits (replaces the client's
-  // flat-120 fallback). Best-effort: if it times out or the map lacks coverage,
-  // the trip keeps the client score.
-  try {
-    await supabase.rpc("rescore_speeding_mapped", { p_trip: params.id });
-    await supabase.rpc("score_map_discipline", { p_trip: params.id });
-  } catch { /* keep client scores if map scoring times out */ }
-
-  const { data: scored } = await supabase.from("trips").select("*").eq("id", params.id).single();
-  return NextResponse.json({ trip: scored ?? trip });
+  // NOTE: the map-based scoring (speeding vs real limits, wrong-side, no-stop-zone)
+  // is deliberately NOT run here. Those PostGIS functions do hundreds of spatial
+  // queries and routinely exceed the serverless timeout, which made the whole
+  // finish request fail on the client. They now run out-of-band via the
+  // `score_pending_map` pg_cron job (~every minute) on completed trips whose map
+  // scores are still null. Finish just records the trip + client sensor score and
+  // returns immediately.
+  return NextResponse.json({ trip });
 }
