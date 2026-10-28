@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { TripSample, TripSource } from "@/types/db";
+import type { ScoreBreakdown, TripSample, TripSource } from "@/types/db";
 import { scoreTrip } from "@/lib/scoring";
 import { LiveManeuverDetector, type ManeuverEvent } from "@/lib/liveManeuverDetector";
 import {
@@ -11,6 +11,8 @@ import {
   getActiveTrip,
   getAllForScoring,
   getLabelLocal,
+  getMeta,
+  getPendingFinalizeTrips,
   getPendingLabels,
   getUnsynced,
   markSynced,
@@ -25,7 +27,21 @@ import {
 const IDB_FLUSH_MS = 1000; // memory -> IndexedDB
 const NET_FLUSH_MS = 4000; // IndexedDB -> server
 const UPLOAD_BATCH = 2000; // rows per network request
+const NET_TIMEOUT_MS = 12000; // abort a single request that stalls (dead/half-open link)
+const FINALIZE_RETRY_MS = 15000; // background retry cadence for a pending finalize
 export const PROMPT_MS = 8000; // how long a detection prompt stays before auto-dismiss
+
+// fetch that fails fast instead of hanging forever on a connected-but-dead link
+// (captive wifi, basement, airport) — a timeout just means "retry later".
+async function fetchWithTimeout(input: string, init: RequestInit = {}, ms = NET_TIMEOUT_MS): Promise<Response> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(input, { ...init, signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 export interface RecorderStatus {
   state: "idle" | "recording" | "finishing" | "done" | "error";
@@ -40,7 +56,8 @@ export interface RecorderStatus {
   error: string | null;
   gpsError: string | null; // location permission denied / unavailable
   gotGpsFix: boolean;      // at least one position fix received this trip
-  recoverable: boolean; // an interrupted trip was found on load
+  recoverable: boolean; // an interrupted *recording* was found on load (resumable)
+  pendingFinalize: boolean; // a finished drive is saved locally and still uploading
   live: { speed_kmh: number | null; accel: number | null; gps: boolean; motion: boolean };
 }
 
@@ -66,6 +83,7 @@ export function useRoadTripRecorder(hz = 25) {
   const [status, setStatus] = useState<RecorderStatus>({
     state: "idle", tripId: null, elapsed: 0, captured: 0, uploaded: 0, pending: 0,
     online: true, wakeLock: false, hz, error: null, gpsError: null, gotGpsFix: false, recoverable: false,
+    pendingFinalize: false,
     live: { speed_kmh: null, accel: null, gps: false, motion: false },
   });
 
@@ -92,6 +110,7 @@ export function useRoadTripRecorder(hz = 25) {
   const netRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const labelNetRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const labelFlushing = useRef(false);
+  const finalizeRetryRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const uiRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const geoWatch = useRef<number | null>(null);
 
@@ -146,8 +165,10 @@ export function useRoadTripRecorder(hz = 25) {
   }, []);
 
   // --- network flush: IndexedDB -> server ---
-  const flush = useCallback(async () => {
-    const tripId = tripIdRef.current;
+  // Pass a tripId to flush a specific (e.g. background-finalizing) trip; omit it
+  // to flush the one currently recording and keep the live upload counter in sync.
+  const flush = useCallback(async (tripIdArg?: string) => {
+    const tripId = tripIdArg ?? tripIdRef.current;
     if (!tripId || flushing.current || !navigator.onLine) return;
     flushing.current = true;
     try {
@@ -161,7 +182,7 @@ export function useRoadTripRecorder(hz = 25) {
           accel_x: v.accel_x, accel_y: v.accel_y, accel_z: v.accel_z,
           gyro_alpha: v.gyro_alpha, gyro_beta: v.gyro_beta, gyro_gamma: v.gyro_gamma,
         }));
-        const res = await fetch(`/api/trips/${tripId}/samples`, {
+        const res = await fetchWithTimeout(`/api/trips/${tripId}/samples`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ samples }),
@@ -169,7 +190,7 @@ export function useRoadTripRecorder(hz = 25) {
         });
         if (!res.ok) throw new Error(await res.text());
         await markSynced(keys, values);
-        uploadedRef.current += values.length;
+        if (!tripIdArg) uploadedRef.current += values.length;
       }
       patch({ error: null });
     } catch (e) {
@@ -220,13 +241,13 @@ export function useRoadTripRecorder(hz = 25) {
           if (rec.deleted) {
             // delete on the server if it ever got created, then drop locally
             if (rec.serverId) {
-              const res = await fetch(`/api/trips/${id}/labels?label_id=${rec.serverId}`, { method: "DELETE" });
+              const res = await fetchWithTimeout(`/api/trips/${id}/labels?label_id=${rec.serverId}`, { method: "DELETE" });
               if (!res.ok) continue; // retry next tick
             }
             await removeLabelLocal(rec.clientId);
           } else if (!rec.serverId) {
             // create (carries the current confirmed/direction in one shot)
-            const res = await fetch(`/api/trips/${id}/labels`, {
+            const res = await fetchWithTimeout(`/api/trips/${id}/labels`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
@@ -239,7 +260,7 @@ export function useRoadTripRecorder(hz = 25) {
             await putLabelLocal({ ...rec, serverId: serverId ?? null, synced: 1 });
           } else {
             // already created but edited since (e.g. a prompt answer) → PATCH
-            const res = await fetch(`/api/trips/${id}/labels`, {
+            const res = await fetchWithTimeout(`/api/trips/${id}/labels`, {
               method: "PATCH",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ label_id: rec.serverId, confirmed: rec.confirmed, direction: rec.direction, type: rec.type }),
@@ -446,6 +467,68 @@ export function useRoadTripRecorder(hz = 25) {
     }
   }, [acquireWake, beginLoops, patch, requestMotionPerm]);
 
+  const stopFinalizeRetry = useCallback(() => {
+    if (finalizeRetryRef.current) { clearInterval(finalizeRetryRef.current); finalizeRetryRef.current = null; }
+  }, []);
+
+  // Push a trip the rest of the way to the server: remaining samples, labels, the
+  // finish call, then the heavy map scoring. Fails fast (timeouts) and returns
+  // false if anything doesn't land — the caller leaves it pending to retry. On
+  // success the local copy is removed. Safe to call repeatedly (idempotent-ish:
+  // finish just re-stamps a completed trip; labels/samples are already synced).
+  const finalizeTrip = useCallback(async (tripId: string, score: ScoreBreakdown): Promise<boolean> => {
+    if (!navigator.onLine) return false;
+    // upload any remaining samples (a few passes)
+    for (let i = 0; i < 4; i++) {
+      await flush(tripId);
+      if ((await countUnsynced(tripId)) === 0) break;
+    }
+    // and any unsynced labels
+    for (let i = 0; i < 4; i++) {
+      await flushLabels(tripId);
+      if ((await getPendingLabels(tripId)).length === 0) break;
+    }
+    // finalize on the server
+    try {
+      const res = await fetchWithTimeout(`/api/trips/${tripId}/finish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ score }),
+      });
+      if (!res.ok) return false;
+    } catch {
+      return false;
+    }
+    // best-effort heavy map scoring (never blocks)
+    try {
+      fetchWithTimeout(`/api/trips/${tripId}/map-score`, { method: "POST", keepalive: true }).catch(() => {});
+    } catch {}
+    await deleteTrip(tripId);
+    return true;
+  }, [flush, flushLabels]);
+
+  // Try to finalize every drive that ended locally but hasn't uploaded yet.
+  const finalizePending = useCallback(async (): Promise<boolean> => {
+    const metas = await getPendingFinalizeTrips();
+    for (const m of metas) {
+      const score = m.score ?? scoreTrip(await getAllForScoring(m.tripId));
+      await finalizeTrip(m.tripId, score);
+    }
+    const left = await getPendingFinalizeTrips();
+    if (left.length === 0) { stopFinalizeRetry(); patch({ pendingFinalize: false }); return true; }
+    patch({ pendingFinalize: true });
+    return false;
+  }, [finalizeTrip, patch, stopFinalizeRetry]);
+
+  const startFinalizeRetry = useCallback(() => {
+    if (finalizeRetryRef.current) return;
+    finalizeRetryRef.current = setInterval(() => { void finalizePending(); }, FINALIZE_RETRY_MS);
+  }, [finalizePending]);
+
+  // End the drive. This never blocks on the network: the drive is scored from the
+  // local buffer, marked ended on-device, and the upload + server finalize run in
+  // the background (and keep retrying on reconnect / next app open). Stopping in a
+  // dead-signal spot ends the trip instantly; it finalizes itself once online.
   const finish = useCallback(async () => {
     patch({ state: "finishing" });
     stopTimers();
@@ -455,49 +538,56 @@ export function useRoadTripRecorder(hz = 25) {
     }
     const tripId = tripIdRef.current!;
 
-    // push everything up, retrying while online
-    for (let i = 0; i < 60; i++) {
-      await flush();
-      if ((await countUnsynced(tripId)) === 0) break;
-      await new Promise((r) => setTimeout(r, 1500));
-    }
-    const remaining = await countUnsynced(tripId);
-
-    // make sure every tagged label is up before we finalize, retrying while online
-    for (let i = 0; i < 20; i++) {
-      await flushLabels(tripId);
-      if ((await getPendingLabels(tripId)).length === 0) break;
-      await new Promise((r) => setTimeout(r, 1000));
-    }
-
     // score from the full local buffer (authoritative match to what we streamed)
     const all = await getAllForScoring(tripId);
     const score = scoreTrip(all);
 
-    try {
-      const res = await fetch(`/api/trips/${tripId}/finish`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ score }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-    } catch (e) {
-      patch({ state: "error", error: "Saved data, but finalizing failed: " + (e as Error).message });
-      return { ok: false, remaining, tripId };
-    }
-
-    // Kick off the heavy map-based scoring separately. The drive is already
-    // saved and ended, so this is best-effort: keepalive lets it survive the
-    // page navigating away, and we don't await the spatial work.
-    try {
-      fetch(`/api/trips/${tripId}/map-score`, { method: "POST", keepalive: true }).catch(() => {});
-    } catch {}
-
+    // the drive is over regardless of connectivity — release the wake lock now
     if (wakeRef.current) { try { await wakeRef.current.release(); } catch {} wakeRef.current = null; }
-    await deleteTrip(tripId);
-    patch({ state: "done", pending: remaining, wakeLock: false });
+
+    // persist the ended state + score locally so a background / next-open finalize
+    // can complete the upload even if we never reach the server right now
+    const prev = await getMeta(tripId);
+    await saveMeta({
+      tripId, source: sourceRef.current,
+      startedAt: prev?.startedAt ?? new Date(startMsRef.current).toISOString(),
+      lastSeq: seqRef.current, status: "pending_finalize", score, endedAt: new Date().toISOString(),
+    });
+
+    const remaining = await countUnsynced(tripId);
+    patch({ state: "done", pending: remaining, pendingFinalize: true, wakeLock: false });
+
+    // fire the finalize in the background; retry on failure
+    void finalizeTrip(tripId, score).then((ok) => {
+      if (ok) patch({ pendingFinalize: false, pending: 0 });
+      else startFinalizeRetry();
+    });
+
     return { ok: true, remaining, tripId };
-  }, [flush, flushLabels, patch, stopTimers]);
+  }, [finalizeTrip, patch, startFinalizeRetry, stopTimers]);
+
+  // Finalize a recovered *recording* without resuming capture (upload + finish only).
+  const finalizeRecovered = useCallback(async (tripId: string) => {
+    patch({ state: "finishing", recoverable: false });
+    const prev = await getMeta(tripId);
+    const score = prev?.score ?? scoreTrip(await getAllForScoring(tripId));
+    await saveMeta({
+      tripId, source: prev?.source ?? "quick",
+      startedAt: prev?.startedAt ?? new Date().toISOString(),
+      lastSeq: prev?.lastSeq ?? (await countAll(tripId)), status: "pending_finalize",
+      score, endedAt: new Date().toISOString(),
+    });
+    tripIdRef.current = tripId;
+    const remaining = await countUnsynced(tripId);
+    patch({ state: "done", pending: remaining, pendingFinalize: true, tripId });
+    const ok = await finalizeTrip(tripId, score);
+    if (ok) patch({ pendingFinalize: false, pending: 0 });
+    else startFinalizeRetry();
+    return { ok, tripId };
+  }, [finalizeTrip, patch, startFinalizeRetry]);
+
+  // Manually retry any pending finalize (e.g. a "Retry upload" button).
+  const retryFinalize = useCallback(() => { void finalizePending(); }, [finalizePending]);
 
   // resume an interrupted trip after a reload: keep recording from lastSeq
   const resume = useCallback(async (tripId: string) => {
@@ -523,11 +613,15 @@ export function useRoadTripRecorder(hz = 25) {
     patch({ recoverable: false });
   }, [patch]);
 
-  // on mount: detect an interrupted trip; re-acquire wake lock on visibility
+  // on mount: offer to resume an interrupted *recording*; silently complete any
+  // drive that ended earlier but never finished uploading; re-acquire wake lock.
   useEffect(() => {
     getActiveTrip().then((m) => { if (m) patch({ recoverable: true, tripId: m.tripId }); }).catch(() => {});
+    getPendingFinalizeTrips().then((ms) => {
+      if (ms.length) { patch({ pendingFinalize: true }); void finalizePending(); startFinalizeRetry(); }
+    }).catch(() => {});
     const onVis = () => { if (document.visibilityState === "visible" && status.state === "recording") acquireWake(); };
-    const onOnline = () => { patch({ online: true }); flush(); void flushLabels(); };
+    const onOnline = () => { patch({ online: true }); flush(); void flushLabels(); void finalizePending(); };
     const onOffline = () => patch({ online: false });
     document.addEventListener("visibilitychange", onVis);
     window.addEventListener("online", onOnline);
@@ -540,10 +634,10 @@ export function useRoadTripRecorder(hz = 25) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => () => stopTimers(), [stopTimers]);
+  useEffect(() => () => { stopTimers(); stopFinalizeRetry(); }, [stopTimers, stopFinalizeRetry]);
 
   return {
-    status, start, finish, resume, discardRecovery,
+    status, start, finish, resume, discardRecovery, finalizeRecovered, retryFinalize,
     labels: {
       pending: pendingPrompt,
       recent: recentLabels,

@@ -31,7 +31,7 @@ const TYPE_LABEL: Record<string, string> = {
 };
 
 export default function RecordPage() {
-  const { status, start, finish, resume, discardRecovery, labels } = useRoadTripRecorder(25);
+  const { status, start, finish, resume, discardRecovery, finalizeRecovered, retryFinalize, labels } = useRoadTripRecorder(25);
   const [confirming, setConfirming] = useState(false);
   const [showManual, setShowManual] = useState(false);
 
@@ -57,17 +57,31 @@ export default function RecordPage() {
         </p>
       </div>
 
-      {/* recovery banner */}
+      {/* recovery banner — an interrupted recording */}
       {status.recoverable && status.state === "idle" && (
         <div className="card border-amber-300 bg-amber-50">
           <div className="text-sm font-semibold text-amber-900">Unfinished trip found</div>
           <p className="mt-1 text-sm text-amber-800">
-            A recording was interrupted. You can resume it (keep recording) or finalize/discard it.
+            A recording was interrupted. <strong>Finalize</strong> it (save &amp; score what was captured)
+            or <strong>resume</strong> to keep recording more.
           </p>
-          <div className="mt-3 flex gap-2">
-            <button className="btn-primary" onClick={() => status.tripId && resume(status.tripId)}>Resume recording</button>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button className="btn-primary" onClick={() => status.tripId && finalizeRecovered(status.tripId)}>Finalize &amp; save</button>
+            <button className="btn-ghost" onClick={() => status.tripId && resume(status.tripId)}>Resume recording</button>
             <button className="btn-ghost" onClick={discardRecovery}>Discard</button>
           </div>
+        </div>
+      )}
+
+      {/* a finished drive is still uploading in the background */}
+      {status.pendingFinalize && status.state === "idle" && (
+        <div className="card border-sky-300 bg-sky-50">
+          <div className="text-sm font-semibold text-sky-900">Finishing a saved trip…</div>
+          <p className="mt-1 text-sm text-sky-800">
+            A previous drive is saved on this phone and finishing its upload. It will complete
+            automatically once you have a good connection.
+          </p>
+          <button className="btn-ghost mt-3" onClick={retryFinalize}>Retry now</button>
         </div>
       )}
 
@@ -196,7 +210,9 @@ export default function RecordPage() {
           <div className="mb-2 text-4xl">✅</div>
           <h2 className="text-lg font-bold">Trip saved</h2>
           <p className="mt-1 text-sm text-slate-500">
-            {status.pending > 0
+            {status.pendingFinalize
+              ? "Saved to your phone. Finishing the upload in the background — you can leave; it'll complete on its own once you have signal."
+              : status.pending > 0
               ? `Saved, but ${status.pending.toLocaleString()} points are still pending upload — reconnect and reopen to finish syncing.`
               : "All data points uploaded successfully."}
           </p>

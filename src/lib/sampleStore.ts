@@ -1,6 +1,6 @@
 "use client";
 
-import type { TripSample } from "@/types/db";
+import type { ScoreBreakdown, TripSample } from "@/types/db";
 
 // Durable, on-device sample buffer backed by IndexedDB. Every captured sample is
 // written here FIRST, then streamed to the server; a background flusher marks
@@ -24,7 +24,13 @@ export interface TripMeta {
   source: string;
   startedAt: string;
   lastSeq: number;
-  status: "recording" | "finishing" | "completed";
+  // "recording": a live/interrupted capture (resumable).
+  // "pending_finalize": the drive has ended; the data is saved locally and only
+  //   the upload + server finalize remain (completes in the background / on next
+  //   open). "finishing" is the legacy equivalent kept for backward compat.
+  status: "recording" | "finishing" | "pending_finalize" | "completed";
+  score?: ScoreBreakdown; // client-computed score, stored so a background finalize can POST it
+  endedAt?: string;
 }
 
 // A maneuver label, stored on-device FIRST (same durability contract as samples).
@@ -202,10 +208,19 @@ export async function getMeta(tripId: string): Promise<TripMeta | undefined> {
   return reqDone(tx(db, "trips", "readonly").get(tripId)) as Promise<TripMeta | undefined>;
 }
 
+// An interrupted *recording* that can be resumed (distinct from a drive that has
+// already ended and is only waiting to upload — see getPendingFinalizeTrips).
 export async function getActiveTrip(): Promise<TripMeta | undefined> {
   const db = await openDB();
   const all = (await reqDone(tx(db, "trips", "readonly").getAll())) as TripMeta[];
-  return all.find((m) => m.status === "recording" || m.status === "finishing");
+  return all.find((m) => m.status === "recording");
+}
+
+// Drives that have ended locally but still need their upload + server finalize.
+export async function getPendingFinalizeTrips(): Promise<TripMeta[]> {
+  const db = await openDB();
+  const all = (await reqDone(tx(db, "trips", "readonly").getAll())) as TripMeta[];
+  return all.filter((m) => m.status === "pending_finalize" || m.status === "finishing");
 }
 
 export async function deleteTrip(tripId: string): Promise<void> {
