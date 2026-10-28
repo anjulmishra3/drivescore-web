@@ -27,8 +27,30 @@ export interface TripMeta {
   status: "recording" | "finishing" | "completed";
 }
 
+// A maneuver label, stored on-device FIRST (same durability contract as samples).
+// `clientId` is generated locally so a label survives even if its create request
+// never reaches the server; `serverId` is filled once the insert is confirmed.
+// `synced` is 0 whenever local state differs from the server (new, edited, or
+// pending delete) and a background flusher reconciles it with retry.
+export interface StoredLabel {
+  clientId: string;
+  tripId: string;
+  t_ms: number;
+  source: "auto" | "manual";
+  type: string | null;
+  direction: "L" | "R" | null;
+  confirmed: boolean | null;
+  lat: number | null;
+  lng: number | null;
+  speed_kmh: number | null;
+  meta: Record<string, unknown> | null;
+  deleted: 0 | 1;
+  serverId: string | null;
+  synced: 0 | 1;
+}
+
 const DB_NAME = "drivescore";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 let dbp: Promise<IDBDatabase> | null = null;
 
@@ -49,6 +71,10 @@ function openDB(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains("trips")) {
         db.createObjectStore("trips", { keyPath: "tripId" });
+      }
+      if (!db.objectStoreNames.contains("labels")) {
+        const l = db.createObjectStore("labels", { keyPath: "clientId" });
+        l.createIndex("by_trip_sync", ["tripId", "synced"]);
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -131,6 +157,37 @@ export async function getAllForScoring(tripId: string): Promise<StoredSample[]> 
   const index = tx(db, "samples", "readonly").index("by_trip_seq");
   const range = IDBKeyRange.bound([tripId, -Infinity], [tripId, Infinity]);
   return reqDone(index.getAll(range)) as Promise<StoredSample[]>;
+}
+
+// --- labels ---
+
+// Insert or overwrite a label (keyed by clientId).
+export async function putLabelLocal(rec: StoredLabel): Promise<void> {
+  const db = await openDB();
+  await reqDone(tx(db, "labels", "readwrite").put(rec));
+}
+
+export async function getLabelLocal(clientId: string): Promise<StoredLabel | undefined> {
+  const db = await openDB();
+  return reqDone(tx(db, "labels", "readonly").get(clientId)) as Promise<StoredLabel | undefined>;
+}
+
+// All labels for a trip that still need to be reconciled with the server.
+export async function getPendingLabels(tripId: string): Promise<StoredLabel[]> {
+  const db = await openDB();
+  const index = tx(db, "labels", "readonly").index("by_trip_sync");
+  return reqDone(index.getAll(IDBKeyRange.only([tripId, 0]))) as Promise<StoredLabel[]>;
+}
+
+export async function removeLabelLocal(clientId: string): Promise<void> {
+  const db = await openDB();
+  await reqDone(tx(db, "labels", "readwrite").delete(clientId));
+}
+
+export async function countPendingLabels(tripId: string): Promise<number> {
+  const db = await openDB();
+  const index = tx(db, "labels", "readonly").index("by_trip_sync");
+  return reqDone(index.count(IDBKeyRange.only([tripId, 0])));
 }
 
 // --- trip meta ---

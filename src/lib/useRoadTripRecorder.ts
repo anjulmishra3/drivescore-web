@@ -10,10 +10,15 @@ import {
   deleteTrip,
   getActiveTrip,
   getAllForScoring,
+  getLabelLocal,
+  getPendingLabels,
   getUnsynced,
   markSynced,
+  putLabelLocal,
   putSamples,
+  removeLabelLocal,
   saveMeta,
+  type StoredLabel,
   type StoredSample,
 } from "@/lib/sampleStore";
 
@@ -85,6 +90,8 @@ export function useRoadTripRecorder(hz = 25) {
   const samplerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const idbRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const netRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const labelNetRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const labelFlushing = useRef(false);
   const uiRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const geoWatch = useRef<number | null>(null);
 
@@ -174,7 +181,7 @@ export function useRoadTripRecorder(hz = 25) {
   }, [patch]);
 
   const stopTimers = useCallback(() => {
-    [samplerRef, idbRef, netRef, uiRef].forEach((r) => {
+    [samplerRef, idbRef, netRef, labelNetRef, uiRef].forEach((r) => {
       if (r.current) clearInterval(r.current);
       r.current = null;
     });
@@ -198,74 +205,114 @@ export function useRoadTripRecorder(hz = 25) {
     }
   }, [patch]);
 
-  // insert a label row; returns its server id (or null on failure)
-  const postLabel = useCallback(async (body: Record<string, unknown>): Promise<string | null> => {
-    const tripId = tripIdRef.current;
-    if (!tripId) return null;
+  // Reconcile locally-stored labels with the server, with retry. Labels are
+  // written to IndexedDB the instant they're tagged (same durability contract as
+  // samples), so a failed network call, a paused DB, or a hung finish can never
+  // lose a hand-labelled point — this flusher keeps trying until each one lands.
+  const flushLabels = useCallback(async (tripId?: string | null) => {
+    const id = tripId ?? tripIdRef.current;
+    if (!id || labelFlushing.current || !navigator.onLine) return;
+    labelFlushing.current = true;
     try {
-      const res = await fetch(`/api/trips/${tripId}/labels`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) return null;
-      const { id } = await res.json();
-      return id ?? null;
-    } catch {
-      return null;
+      const pending = await getPendingLabels(id);
+      for (const rec of pending) {
+        try {
+          if (rec.deleted) {
+            // delete on the server if it ever got created, then drop locally
+            if (rec.serverId) {
+              const res = await fetch(`/api/trips/${id}/labels?label_id=${rec.serverId}`, { method: "DELETE" });
+              if (!res.ok) continue; // retry next tick
+            }
+            await removeLabelLocal(rec.clientId);
+          } else if (!rec.serverId) {
+            // create (carries the current confirmed/direction in one shot)
+            const res = await fetch(`/api/trips/${id}/labels`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                t_ms: rec.t_ms, source: rec.source, type: rec.type, direction: rec.direction,
+                confirmed: rec.confirmed, lat: rec.lat, lng: rec.lng, speed_kmh: rec.speed_kmh, meta: rec.meta,
+              }),
+            });
+            if (!res.ok) continue;
+            const { id: serverId } = await res.json();
+            await putLabelLocal({ ...rec, serverId: serverId ?? null, synced: 1 });
+          } else {
+            // already created but edited since (e.g. a prompt answer) → PATCH
+            const res = await fetch(`/api/trips/${id}/labels`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ label_id: rec.serverId, confirmed: rec.confirmed, direction: rec.direction, type: rec.type }),
+            });
+            if (!res.ok) continue;
+            await putLabelLocal({ ...rec, synced: 1 });
+          }
+        } catch { /* leave unsynced; next tick retries */ }
+      }
+    } finally {
+      labelFlushing.current = false;
     }
   }, []);
 
+  // Persist a freshly-tagged label locally (durable immediately) and kick a sync.
+  const logLabelLocal = useCallback((rec: Omit<StoredLabel, "deleted" | "serverId" | "synced">) => {
+    const full: StoredLabel = { ...rec, deleted: 0, serverId: null, synced: 0 };
+    void putLabelLocal(full).then(() => flushLabels());
+    return full.clientId;
+  }, [flushLabels]);
+
   // auto-detected maneuver → log it, and (for lane changes) raise a quick prompt
-  const handleAutoEvent = useCallback(async (e: ManeuverEvent) => {
-    const id = await postLabel({
-      t_ms: e.t_ms, source: "auto", type: e.type,
+  const handleAutoEvent = useCallback((e: ManeuverEvent) => {
+    const tripId = tripIdRef.current;
+    if (!tripId) return;
+    const clientId = crypto.randomUUID();
+    logLabelLocal({
+      clientId, tripId, t_ms: e.t_ms, source: "auto", type: e.type, direction: null, confirmed: null,
       lat: e.lat, lng: e.lng, speed_kmh: e.speed_kmh,
       meta: { peak_yaw: e.peak_yaw, net_heading: e.net_heading, dur_s: e.dur_s },
     });
     setLabelCount((n) => n + 1);
-    setRecentLabels((r) => [{ id, t_ms: e.t_ms, source: "auto" as const, type: e.type, direction: null, confirmed: null }, ...r].slice(0, 8));
+    setRecentLabels((r) => [{ id: clientId, t_ms: e.t_ms, source: "auto" as const, type: e.type, direction: null, confirmed: null }, ...r].slice(0, 8));
 
     // Prompt for the detected maneuver (yes/no), with a cooldown so prompts
     // don't stack. Auto-logging above already captured it regardless of answer.
     const now = Date.now();
     if (now - lastPromptAtRef.current > 6000) {
       lastPromptAtRef.current = now;
-      setPendingPrompt({ event: e, labelId: id });
+      setPendingPrompt({ event: e, labelId: clientId });
       if (promptTimerRef.current) clearTimeout(promptTimerRef.current);
       promptTimerRef.current = setTimeout(() => setPendingPrompt(null), PROMPT_MS);
     }
-  }, [postLabel]);
+  }, [logLabelLocal]);
 
   // manual tag at the current moment
-  const logManual = useCallback(async (type: ManeuverLabelType, direction: "L" | "R" | null = null) => {
+  const logManual = useCallback((type: ManeuverLabelType, direction: "L" | "R" | null = null) => {
+    const tripId = tripIdRef.current;
+    if (!tripId) return;
     const l = latest.current;
     const t_ms = Date.now() - startMsRef.current;
-    const id = await postLabel({
-      t_ms, source: "manual", type, direction,
-      lat: l.lat ?? null, lng: l.lng ?? null, speed_kmh: l.speed_kmh ?? null,
+    const clientId = crypto.randomUUID();
+    logLabelLocal({
+      clientId, tripId, t_ms, source: "manual", type, direction, confirmed: null,
+      lat: l.lat ?? null, lng: l.lng ?? null, speed_kmh: l.speed_kmh ?? null, meta: null,
     });
     setLabelCount((n) => n + 1);
-    setRecentLabels((r) => [{ id, t_ms, source: "manual" as const, type, direction, confirmed: null }, ...r].slice(0, 8));
-  }, [postLabel]);
+    setRecentLabels((r) => [{ id: clientId, t_ms, source: "manual" as const, type, direction, confirmed: null }, ...r].slice(0, 8));
+  }, [logLabelLocal]);
 
-  // answer a prompt (yes/no, optional direction for lane changes) → PATCH
+  // answer a prompt (yes/no, optional direction for lane changes) → edit locally + sync
   const answerPrompt = useCallback(async (yes: boolean, direction: "L" | "R" | null = null) => {
     const p = pendingPrompt;
     setPendingPrompt(null);
     if (promptTimerRef.current) clearTimeout(promptTimerRef.current);
-    if (!p?.labelId || !tripIdRef.current) return;
+    if (!p?.labelId) return;
     setRecentLabels((r) => r.map((x) => (x.id === p.labelId ? { ...x, confirmed: yes, direction: direction ?? x.direction } : x)));
-    const body: Record<string, unknown> = { label_id: p.labelId, confirmed: yes };
-    if (direction) body.direction = direction;
-    try {
-      await fetch(`/api/trips/${tripIdRef.current}/labels`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-    } catch { /* best effort */ }
-  }, [pendingPrompt]);
+    const rec = await getLabelLocal(p.labelId);
+    if (rec) {
+      await putLabelLocal({ ...rec, confirmed: yes, direction: direction ?? rec.direction, synced: 0 });
+      void flushLabels();
+    }
+  }, [pendingPrompt, flushLabels]);
 
   const dismissPrompt = useCallback(() => {
     setPendingPrompt(null);
@@ -278,12 +325,13 @@ export function useRoadTripRecorder(hz = 25) {
     if (!top) return;
     setRecentLabels((r) => r.slice(1));
     setLabelCount((n) => Math.max(0, n - 1));
-    if (top.id && tripIdRef.current) {
-      try {
-        await fetch(`/api/trips/${tripIdRef.current}/labels?label_id=${top.id}`, { method: "DELETE" });
-      } catch { /* best effort */ }
+    if (!top.id) return;
+    const rec = await getLabelLocal(top.id);
+    if (rec) {
+      await putLabelLocal({ ...rec, deleted: 1, synced: 0 });
+      void flushLabels();
     }
-  }, [recentLabels]);
+  }, [recentLabels, flushLabels]);
 
   const beginLoops = useCallback(() => {
     const hzMs = Math.max(10, Math.round(1000 / hz));
@@ -339,6 +387,7 @@ export function useRoadTripRecorder(hz = 25) {
     }, IDB_FLUSH_MS);
 
     netRef.current = setInterval(flush, NET_FLUSH_MS);
+    labelNetRef.current = setInterval(() => void flushLabels(), NET_FLUSH_MS);
 
     uiRef.current = setInterval(() => {
       const l = latest.current;
@@ -356,7 +405,7 @@ export function useRoadTripRecorder(hz = 25) {
         },
       });
     }, 500);
-  }, [flush, hz, onMotion, onPosition, patch, handleAutoEvent]);
+  }, [flush, flushLabels, hz, onMotion, onPosition, patch, handleAutoEvent]);
 
   const requestMotionPerm = useCallback(async () => {
     const M = (window as any).DeviceMotionEvent;
@@ -414,6 +463,13 @@ export function useRoadTripRecorder(hz = 25) {
     }
     const remaining = await countUnsynced(tripId);
 
+    // make sure every tagged label is up before we finalize, retrying while online
+    for (let i = 0; i < 20; i++) {
+      await flushLabels(tripId);
+      if ((await getPendingLabels(tripId)).length === 0) break;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+
     // score from the full local buffer (authoritative match to what we streamed)
     const all = await getAllForScoring(tripId);
     const score = scoreTrip(all);
@@ -441,7 +497,7 @@ export function useRoadTripRecorder(hz = 25) {
     await deleteTrip(tripId);
     patch({ state: "done", pending: remaining, wakeLock: false });
     return { ok: true, remaining, tripId };
-  }, [flush, patch, stopTimers]);
+  }, [flush, flushLabels, patch, stopTimers]);
 
   // resume an interrupted trip after a reload: keep recording from lastSeq
   const resume = useCallback(async (tripId: string) => {
@@ -471,7 +527,7 @@ export function useRoadTripRecorder(hz = 25) {
   useEffect(() => {
     getActiveTrip().then((m) => { if (m) patch({ recoverable: true, tripId: m.tripId }); }).catch(() => {});
     const onVis = () => { if (document.visibilityState === "visible" && status.state === "recording") acquireWake(); };
-    const onOnline = () => { patch({ online: true }); flush(); };
+    const onOnline = () => { patch({ online: true }); flush(); void flushLabels(); };
     const onOffline = () => patch({ online: false });
     document.addEventListener("visibilitychange", onVis);
     window.addEventListener("online", onOnline);
