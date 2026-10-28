@@ -37,11 +37,20 @@ const TURN_MIN_KMH = 8;    // a turn must reach at least this peak speed to coun
 const LC_MIN_KMH = 15;     // a lane change must reach at least this peak speed
 const CLOSE_MS = 300;      // below-threshold time that ends a lobe
 const TURN_DEG = 35;       // net heading that marks a turn
-const PAIR_GAP_MS = 2500;  // max gap between the two lobes of a lane change
-// Minimum maneuver duration. Calibrated on reviewed labels (2026-10): real
-// turns/lane-changes ran ≥2.8 s, while every rejected false positive was ≤1.4 s
-// (brief jolts/wobbles). A 2 s floor cleanly separates them.
-const MIN_EVENT_S = 2.0;
+const PAIR_GAP_MS = 3500;  // max gap between the two lobes of a lane change
+// Minimum TURN duration. Calibrated on reviewed labels (2026-10): real turns ran
+// ≥2.8 s while every rejected false positive was ≤1.4 s, so a 2 s floor cleanly
+// separates them for turns (which are slow, big-heading maneuvers).
+const MIN_TURN_S = 2.0;
+// Lane changes are different: at highway speed a deliberate lane change is a quick
+// steer-out/steer-in that can complete in ~1 s with only a few degrees of yaw.
+// Applying the 2 s turn floor to lane changes (as an earlier build did) silently
+// dropped most highway lane changes — hence a much lower floor here.
+const MIN_LC_S = 0.8;
+// Cooldown between detected lane changes. The old 3 s value merged rapid,
+// back-to-back lane changes (common when deliberately weaving on a highway) into
+// one detection; 1.2 s lets consecutive ones register.
+const LC_COOLDOWN_MS = 1200;
 
 export class LiveManeuverDetector {
   private gx: number | null = null; private gy = 0; private gz = 0;
@@ -109,7 +118,7 @@ export class LiveManeuverDetector {
 
     // Turn: large net heading change, reached a real driving speed, and lasted
     // long enough to be a real maneuver (not a brief jolt).
-    if (netAbs >= TURN_DEG && lobe.peakSpeed >= TURN_MIN_KMH && durS >= MIN_EVENT_S) {
+    if (netAbs >= TURN_DEG && lobe.peakSpeed >= TURN_MIN_KMH && durS >= MIN_TURN_S) {
       this.emit("turn", lobe);
       this.prevLobe = lobe;
       return;
@@ -124,8 +133,8 @@ export class LiveManeuverDetector {
         netAbs >= 3 && netAbs <= 20 &&
         Math.abs(p.net + lobe.net) <= 0.5 * (Math.abs(p.net) + netAbs) &&
         Math.max(p.peakSpeed, lobe.peakSpeed) >= LC_MIN_KMH &&
-        (lobe.endT - p.startT) / 1000 >= MIN_EVENT_S &&
-        lobe.startT - this.lastPairT > 3000) {
+        (lobe.endT - p.startT) / 1000 >= MIN_LC_S &&
+        lobe.startT - this.lastPairT > LC_COOLDOWN_MS) {
       this.lastPairT = lobe.startT;
       const merged: Lobe = {
         sign: lobe.sign,
