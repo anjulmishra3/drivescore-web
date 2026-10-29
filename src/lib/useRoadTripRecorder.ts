@@ -5,6 +5,7 @@ import type { ScoreBreakdown, TripSample, TripSource } from "@/types/db";
 import { scoreTrip } from "@/lib/scoring";
 import { LiveManeuverDetector, type ManeuverEvent } from "@/lib/liveManeuverDetector";
 import { LiveLaneChangeDetector } from "@/lib/liveLaneChangeDetector";
+import { MountStateDetector, type MountState } from "@/lib/mountStateDetector";
 import { isLoaded as roadMapLoaded, nearestRoad } from "@/lib/localRoadMap";
 import {
   countAll,
@@ -60,6 +61,7 @@ export interface RecorderStatus {
   gotGpsFix: boolean;      // at least one position fix received this trip
   recoverable: boolean; // an interrupted *recording* was found on load (resumable)
   pendingFinalize: boolean; // a finished drive is saved locally and still uploading
+  mountState: MountState; // phone mounted vs loose (gates live lane-change prompts)
   live: { speed_kmh: number | null; accel: number | null; gps: boolean; motion: boolean };
 }
 
@@ -85,7 +87,7 @@ export function useRoadTripRecorder(hz = 25) {
   const [status, setStatus] = useState<RecorderStatus>({
     state: "idle", tripId: null, elapsed: 0, captured: 0, uploaded: 0, pending: 0,
     online: true, wakeLock: false, hz, error: null, gpsError: null, gotGpsFix: false, recoverable: false,
-    pendingFinalize: false,
+    pendingFinalize: false, mountState: "uncertain",
     live: { speed_kmh: null, accel: null, gps: false, motion: false },
   });
 
@@ -103,6 +105,7 @@ export function useRoadTripRecorder(hz = 25) {
   const detectorRef = useRef<LiveManeuverDetector | null>(null);
   const lcDetectorRef = useRef<LiveLaneChangeDetector | null>(null);
   const lcActiveRef = useRef(false);
+  const mountRef = useRef<MountStateDetector | null>(null);
   const promptTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastPromptAtRef = useRef(0);
   const [pendingPrompt, setPendingPrompt] = useState<PendingPrompt | null>(null);
@@ -215,6 +218,7 @@ export function useRoadTripRecorder(hz = 25) {
     window.removeEventListener("devicemotion", onMotion);
     detectorRef.current = null;
     lcDetectorRef.current = null;
+    mountRef.current = null;
     if (promptTimerRef.current) clearTimeout(promptTimerRef.current);
     setPendingPrompt(null);
   }, [onMotion]);
@@ -365,12 +369,18 @@ export function useRoadTripRecorder(hz = 25) {
     // and is the authority for lane changes; suppress the gyro detector's weaker
     // lane-change events so we don't double-prompt. The gyro detector still owns turns.
     lcActiveRef.current = roadMapLoaded();
+    mountRef.current = new MountStateDetector();
     detectorRef.current = new LiveManeuverDetector((e) => {
       if (e.type === "lane_change" && lcActiveRef.current) return;
       void handleAutoEvent(e);
     });
     lcDetectorRef.current = lcActiveRef.current
-      ? new LiveLaneChangeDetector(nearestRoad, (e) => { void handleAutoEvent(e); })
+      ? new LiveLaneChangeDetector(nearestRoad, (e) => {
+          // only trust live lane-change prompts when the phone is actually mounted;
+          // a loose phone's lateral-accel is its own sliding, not the car steering.
+          if (mountRef.current?.state !== "mounted") return;
+          void handleAutoEvent(e);
+        })
       : null;
 
     window.addEventListener("devicemotion", onMotion);
@@ -408,6 +418,10 @@ export function useRoadTripRecorder(hz = 25) {
         t_ms, lat: l.lat ?? null, lng: l.lng ?? null, speed_kmh: l.speed_kmh ?? null,
         accel_x: l.accel_x ?? null, accel_y: l.accel_y ?? null, accel_z: l.accel_z ?? null,
       });
+      mountRef.current?.push({
+        accel_x: l.accel_x ?? null, accel_y: l.accel_y ?? null, accel_z: l.accel_z ?? null,
+        gyro_alpha: l.gyro_alpha ?? null, gyro_beta: l.gyro_beta ?? null, gyro_gamma: l.gyro_gamma ?? null,
+      });
     }, hzMs);
 
     idbRef.current = setInterval(async () => {
@@ -437,6 +451,7 @@ export function useRoadTripRecorder(hz = 25) {
         uploaded: uploadedRef.current,
         pending: Math.max(0, seqRef.current - uploadedRef.current),
         online: navigator.onLine,
+        mountState: mountRef.current?.state ?? "uncertain",
         live: {
           speed_kmh: l.speed_kmh ?? null,
           accel: l.accel_x != null && l.accel_y != null && l.accel_z != null

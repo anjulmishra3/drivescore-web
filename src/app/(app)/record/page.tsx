@@ -200,7 +200,17 @@ export default function RecordPage() {
             <Stat label="Accel" value={status.live.accel == null ? "—" : `${status.live.accel.toFixed(1)} m/s²`} />
             <Stat label="GPS" value={status.live.gps ? "ok" : "waiting…"} tone={status.live.gps ? "good" : "warn"} />
             <Stat label="Motion" value={status.live.motion ? "ok" : "waiting…"} tone={status.live.motion ? "good" : "warn"} />
+            <Stat
+              label="Phone"
+              value={status.mountState === "mounted" ? "mounted" : status.mountState === "loose" ? "loose" : "checking…"}
+              tone={status.mountState === "mounted" ? "good" : status.mountState === "loose" ? "warn" : undefined}
+            />
           </div>
+          {status.mountState === "loose" && (
+            <p className="-mt-2 text-xs text-score-ok">
+              Phone seems loose — mount it for reliable live lane-change prompts (your data is still recorded).
+            </p>
+          )}
 
           {/* ── Labeling: detector drives it; minimal manual fallback ── */}
           <div className="card flex items-center justify-between">
