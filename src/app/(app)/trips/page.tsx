@@ -2,14 +2,9 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import type { Trip } from "@/types/db";
 import { scoreColor } from "@/lib/scoring";
+import LocalTime from "@/components/LocalTime";
 
 export const dynamic = "force-dynamic";
-
-function fmtDate(iso: string) {
-  return new Date(iso).toLocaleString(undefined, {
-    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
-  });
-}
 
 export default async function TripsPage() {
   const supabase = createClient();
@@ -48,7 +43,7 @@ export default async function TripsPage() {
               className="card flex items-center justify-between transition hover:bg-slate-50"
             >
               <div>
-                <div className="text-sm font-medium text-slate-800">{fmtDate(t.started_at)}</div>
+                <div className="text-sm font-medium text-slate-800"><LocalTime iso={t.started_at} /></div>
                 <div className="text-xs text-slate-400">
                   {t.distance_km?.toFixed(1) ?? "0"} km ·{" "}
                   {t.duration_s ? `${Math.round(t.duration_s / 60)} min` : "—"} ·{" "}
