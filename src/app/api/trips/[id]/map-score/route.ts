@@ -34,6 +34,10 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
   try {
     await supabase.rpc("rescore_speeding_mapped", { p_trip: params.id });
     await supabase.rpc("score_map_discipline", { p_trip: params.id });
+    // High-recall lane-change candidates (map-offset ∪ lateral-accel), written as
+    // unconfirmed auto labels for confirm/reject in review. Best-effort: a failure
+    // here must not fail the (already important) map scoring above.
+    await supabase.rpc("generate_lane_change_candidates", { p_trip: params.id });
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 500 });
   }
