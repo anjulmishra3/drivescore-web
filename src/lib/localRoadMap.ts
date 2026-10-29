@@ -81,6 +81,26 @@ function buildIndex(roads: Road[]) {
 }
 
 export function isLoaded() { return grid != null && loadedRoads.length > 0; }
+export function loadedRoadCount() { return loadedRoads.length; }
+
+// A ~18 km box centred on a point (good for a session's worth of local driving).
+export function bboxAround(lat: number, lng: number, padDeg = 0.08): BBox {
+  return { minLat: lat - padDeg, maxLat: lat + padDeg, minLng: lng - padDeg, maxLng: lng + padDeg };
+}
+
+// Load the most recently cached region into the in-memory index (no network),
+// so a cached area is ready for live matching right after the page opens.
+export async function loadAnyCached(): Promise<number> {
+  try {
+    const db = await openDB();
+    const all = (await reqDone(db.transaction("regions", "readonly").objectStore("regions").getAll())) as
+      { key: string; roads: Road[]; fetchedAt: number }[];
+    if (!all.length) return 0;
+    all.sort((a, b) => b.fetchedAt - a.fetchedAt);
+    buildIndex(all[0].roads);
+    return loadedRoads.length;
+  } catch { return 0; }
+}
 
 // Load a region into memory, fetching + caching it if we don't have it yet.
 export async function ensureRegion(bbox: BBox): Promise<number> {

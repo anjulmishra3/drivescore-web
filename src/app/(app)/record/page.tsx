@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRoadTripRecorder } from "@/lib/useRoadTripRecorder";
+import { ensureRegion, bboxAround, loadAnyCached, isLoaded } from "@/lib/localRoadMap";
 
 function Stat({ label, value, tone }: { label: string; value: string; tone?: "good" | "warn" | "bad" }) {
   const color = tone === "good" ? "text-score-good" : tone === "warn" ? "text-score-ok" : tone === "bad" ? "text-score-bad" : "text-slate-800";
@@ -40,6 +41,30 @@ export default function RecordPage() {
   const clock = `${hh}:${String(mm % 60).padStart(2, "0")}:${String(status.elapsed % 60).padStart(2, "0")}`;
 
   const [finishedTripId, setFinishedTripId] = useState<string | null>(null);
+
+  // on-device road map (enables live lane-change prompts)
+  const [mapState, setMapState] = useState<"none" | "loading" | "ready" | "error">("none");
+  const [mapRoads, setMapRoads] = useState(0);
+  const [mapErr, setMapErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    loadAnyCached().then((n) => { if (n > 0) { setMapRoads(n); setMapState("ready"); } }).catch(() => {});
+  }, []);
+
+  function downloadArea() {
+    setMapState("loading"); setMapErr(null);
+    if (!("geolocation" in navigator)) { setMapState("error"); setMapErr("No location on this device."); return; }
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        try {
+          const n = await ensureRegion(bboxAround(pos.coords.latitude, pos.coords.longitude));
+          setMapRoads(n); setMapState(isLoaded() ? "ready" : "none");
+        } catch (e) { setMapState("error"); setMapErr((e as Error).message); }
+      },
+      (err) => { setMapState("error"); setMapErr(err.message); },
+      { enableHighAccuracy: true, timeout: 15000 },
+    );
+  }
 
   async function doFinish() {
     setConfirming(false);
@@ -82,6 +107,31 @@ export default function RecordPage() {
             automatically once you have a good connection.
           </p>
           <button className="btn-ghost mt-3" onClick={retryFinalize}>Retry now</button>
+        </div>
+      )}
+
+      {/* on-device road map → live lane-change prompts */}
+      {status.state === "idle" && (
+        <div className="card flex items-center justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold text-slate-800">Live lane-change tagging</div>
+            <div className="mt-0.5 text-xs text-slate-500">
+              {mapState === "ready"
+                ? `Area cached (${mapRoads.toLocaleString()} roads) — you'll get live prompts in this area.`
+                : mapState === "loading"
+                ? "Downloading road data for this area…"
+                : mapState === "error"
+                ? `Couldn't download: ${mapErr}`
+                : "Download this area's roads to get live lane-change prompts while driving (works offline)."}
+            </div>
+          </div>
+          <button
+            className={mapState === "ready" ? "btn-ghost shrink-0" : "btn-primary shrink-0"}
+            disabled={mapState === "loading"}
+            onClick={downloadArea}
+          >
+            {mapState === "ready" ? "Re-download" : mapState === "loading" ? "…" : "Download area"}
+          </button>
         </div>
       )}
 

@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ScoreBreakdown, TripSample, TripSource } from "@/types/db";
 import { scoreTrip } from "@/lib/scoring";
 import { LiveManeuverDetector, type ManeuverEvent } from "@/lib/liveManeuverDetector";
+import { LiveLaneChangeDetector } from "@/lib/liveLaneChangeDetector";
+import { isLoaded as roadMapLoaded, nearestRoad } from "@/lib/localRoadMap";
 import {
   countAll,
   countUnsynced,
@@ -99,6 +101,8 @@ export function useRoadTripRecorder(hz = 25) {
 
   // --- maneuver labeling ---
   const detectorRef = useRef<LiveManeuverDetector | null>(null);
+  const lcDetectorRef = useRef<LiveLaneChangeDetector | null>(null);
+  const lcActiveRef = useRef(false);
   const promptTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastPromptAtRef = useRef(0);
   const [pendingPrompt, setPendingPrompt] = useState<PendingPrompt | null>(null);
@@ -210,6 +214,7 @@ export function useRoadTripRecorder(hz = 25) {
     geoWatch.current = null;
     window.removeEventListener("devicemotion", onMotion);
     detectorRef.current = null;
+    lcDetectorRef.current = null;
     if (promptTimerRef.current) clearTimeout(promptTimerRef.current);
     setPendingPrompt(null);
   }, [onMotion]);
@@ -356,7 +361,17 @@ export function useRoadTripRecorder(hz = 25) {
 
   const beginLoops = useCallback(() => {
     const hzMs = Math.max(10, Math.round(1000 / hz));
-    detectorRef.current = new LiveManeuverDetector((e) => { void handleAutoEvent(e); });
+    // When the region road map is cached, the map+accel lane-change detector runs
+    // and is the authority for lane changes; suppress the gyro detector's weaker
+    // lane-change events so we don't double-prompt. The gyro detector still owns turns.
+    lcActiveRef.current = roadMapLoaded();
+    detectorRef.current = new LiveManeuverDetector((e) => {
+      if (e.type === "lane_change" && lcActiveRef.current) return;
+      void handleAutoEvent(e);
+    });
+    lcDetectorRef.current = lcActiveRef.current
+      ? new LiveLaneChangeDetector(nearestRoad, (e) => { void handleAutoEvent(e); })
+      : null;
 
     window.addEventListener("devicemotion", onMotion);
     lastFix.current = null;
@@ -388,6 +403,10 @@ export function useRoadTripRecorder(hz = 25) {
         accel_x: l.accel_x ?? null, accel_y: l.accel_y ?? null, accel_z: l.accel_z ?? null,
         gyro_alpha: l.gyro_alpha ?? null, gyro_beta: l.gyro_beta ?? null, gyro_gamma: l.gyro_gamma ?? null,
         lat: l.lat ?? null, lng: l.lng ?? null,
+      });
+      lcDetectorRef.current?.push({
+        t_ms, lat: l.lat ?? null, lng: l.lng ?? null, speed_kmh: l.speed_kmh ?? null,
+        accel_x: l.accel_x ?? null, accel_y: l.accel_y ?? null, accel_z: l.accel_z ?? null,
       });
     }, hzMs);
 
