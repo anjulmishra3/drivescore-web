@@ -69,6 +69,7 @@ function cellKey(lat: number, lng: number) {
 function buildIndex(roads: Road[]) {
   const g = new Map<string, Road[]>();
   for (const r of roads) {
+    if (!r.coords || r.coords.length < 2) continue; // skip degenerate/empty geometry
     const seen = new Set<string>();
     for (const [lng, lat] of r.coords) {
       const k = cellKey(lat, lng);
@@ -144,6 +145,7 @@ export function nearestRoad(lat: number, lng: number): RoadMatch | null {
   const [px, py] = toXY(lat, lng, lat);
   let best: RoadMatch | null = null, bestD = Infinity;
   for (const r of candidates) {
+    if (!r.coords) continue;
     for (let s = 0; s + 1 < r.coords.length; s++) {
       const [ax, ay] = toXY(r.coords[s][1], r.coords[s][0], lat);
       const [bx, by] = toXY(r.coords[s + 1][1], r.coords[s + 1][0], lat);
