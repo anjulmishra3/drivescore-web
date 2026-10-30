@@ -18,9 +18,10 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "minLng,minLat,maxLng,maxLat required" }, { status: 400 });
   }
   const [minLng, minLat, maxLng, maxLat] = nums;
-  // guard against an accidentally huge request (keep the cached payload bounded)
-  if ((maxLng - minLng) * (maxLat - minLat) > 0.25) {
-    return NextResponse.json({ error: "bbox too large (max ~0.5°x0.5°)" }, { status: 400 });
+  // guard against an accidentally huge request (keep the cached payload bounded).
+  // 0.35 deg² allows up to roughly a 27 km radius box.
+  if ((maxLng - minLng) * (maxLat - minLat) > 0.35) {
+    return NextResponse.json({ error: "bbox too large (max ~27 km radius)" }, { status: 400 });
   }
 
   const { data, error } = await supabase.rpc("roads_in_bbox", {

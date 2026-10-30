@@ -83,9 +83,12 @@ function buildIndex(roads: Road[]) {
 export function isLoaded() { return grid != null && loadedRoads.length > 0; }
 export function loadedRoadCount() { return loadedRoads.length; }
 
-// A ~18 km box centred on a point (good for a session's worth of local driving).
-export function bboxAround(lat: number, lng: number, padDeg = 0.08): BBox {
-  return { minLat: lat - padDeg, maxLat: lat + padDeg, minLng: lng - padDeg, maxLng: lng + padDeg };
+// A box of the given radius (km) centred on a point. Latitude degrees are ~111 km
+// everywhere; longitude degrees shrink with latitude (cos), so convert per-axis.
+export function bboxAround(lat: number, lng: number, radiusKm = 10): BBox {
+  const dLat = radiusKm / 111.0;
+  const dLng = radiusKm / (111.32 * Math.max(Math.cos((lat * Math.PI) / 180), 1e-6));
+  return { minLat: lat - dLat, maxLat: lat + dLat, minLng: lng - dLng, maxLng: lng + dLng };
 }
 
 // Load the most recently cached region into the in-memory index (no network),

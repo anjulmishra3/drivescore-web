@@ -46,6 +46,7 @@ export default function RecordPage() {
   const [mapState, setMapState] = useState<"none" | "loading" | "ready" | "error">("none");
   const [mapRoads, setMapRoads] = useState(0);
   const [mapErr, setMapErr] = useState<string | null>(null);
+  const [radiusKm, setRadiusKm] = useState(23);
 
   useEffect(() => {
     loadAnyCached().then((n) => { if (n > 0) { setMapRoads(n); setMapState("ready"); } }).catch(() => {});
@@ -57,7 +58,7 @@ export default function RecordPage() {
     navigator.geolocation.getCurrentPosition(
       async (pos) => {
         try {
-          const n = await ensureRegion(bboxAround(pos.coords.latitude, pos.coords.longitude));
+          const n = await ensureRegion(bboxAround(pos.coords.latitude, pos.coords.longitude, radiusKm));
           setMapRoads(n); setMapState(isLoaded() ? "ready" : "none");
         } catch (e) { setMapState("error"); setMapErr((e as Error).message); }
       },
@@ -112,26 +113,42 @@ export default function RecordPage() {
 
       {/* on-device road map → live lane-change prompts */}
       {status.state === "idle" && (
-        <div className="card flex items-center justify-between gap-3">
-          <div>
-            <div className="text-sm font-semibold text-slate-800">Live lane-change tagging</div>
-            <div className="mt-0.5 text-xs text-slate-500">
-              {mapState === "ready"
-                ? `Area cached (${mapRoads.toLocaleString()} roads) — you'll get live prompts in this area.`
-                : mapState === "loading"
-                ? "Downloading road data for this area…"
-                : mapState === "error"
-                ? `Couldn't download: ${mapErr}`
-                : "Download this area's roads to get live lane-change prompts while driving (works offline)."}
+        <div className="card space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold text-slate-800">Live lane-change tagging</div>
+              <div className="mt-0.5 text-xs text-slate-500">
+                {mapState === "ready"
+                  ? `Area cached (${mapRoads.toLocaleString()} roads) — you'll get live prompts in this area.`
+                  : mapState === "loading"
+                  ? `Downloading roads within ${radiusKm} km…`
+                  : mapState === "error"
+                  ? `Couldn't download: ${mapErr}`
+                  : "Download this area's roads to get live lane-change prompts while driving (works offline)."}
+              </div>
             </div>
+            <button
+              className={mapState === "ready" ? "btn-ghost shrink-0" : "btn-primary shrink-0"}
+              disabled={mapState === "loading"}
+              onClick={downloadArea}
+            >
+              {mapState === "ready" ? "Re-download" : mapState === "loading" ? "…" : "Download area"}
+            </button>
           </div>
-          <button
-            className={mapState === "ready" ? "btn-ghost shrink-0" : "btn-primary shrink-0"}
-            disabled={mapState === "loading"}
-            onClick={downloadArea}
-          >
-            {mapState === "ready" ? "Re-download" : mapState === "loading" ? "…" : "Download area"}
-          </button>
+          <div className="flex items-center gap-2 text-xs text-slate-500">
+            <span>Radius:</span>
+            {[10, 23, 25].map((r) => (
+              <button
+                key={r}
+                disabled={mapState === "loading"}
+                onClick={() => setRadiusKm(r)}
+                className={`rounded-full px-3 py-1 font-medium ${radiusKm === r ? "bg-brand-500 text-white" : "bg-slate-100 text-slate-600"}`}
+              >
+                {r} km
+              </button>
+            ))}
+            <span className="ml-auto text-slate-400">centered on your location</span>
+          </div>
         </div>
       )}
 
