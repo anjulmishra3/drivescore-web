@@ -87,9 +87,10 @@ export default function TrainPage() {
             <li>Find a safe, empty stretch of road.</li>
             <li>Tap <strong>Start</strong> before each maneuver, do it, then tap <strong>Done</strong>.</li>
           </ol>
-          <div className={`rounded-lg px-3 py-2 text-sm ${mounted ? "bg-score-good/10 text-score-good" : "bg-score-ok/10 text-score-ok"}`}>
-            Phone: {rec.status.mountState === "mounted" ? "mounted ✓" : rec.status.mountState === "loose" ? "seems loose — mount it firmly" : "checking…"}
-          </div>
+          <p className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
+            Tapping Start asks for motion &amp; location access and begins the mount check — you&apos;ll see a
+            <strong> mounted&nbsp;✓</strong> indicator on the next screen once sensors are running.
+          </p>
           <button className="btn-primary w-full" onClick={begin}>Start calibration ({STEPS.length} maneuvers)</button>
           <Link href="/record" className="block text-center text-xs text-slate-400">Back to recording</Link>
         </div>
@@ -97,9 +98,14 @@ export default function TrainPage() {
 
       {(phase === "ready" || phase === "countdown" || phase === "recording" || phase === "form") && (
         <div className="card space-y-4">
-          <div className="flex items-center justify-between text-xs text-slate-400">
-            <span>Maneuver {idx + 1} of {STEPS.length}</span>
-            <span>{saved} saved{rec.status.mountState === "loose" ? " · ⚠ phone loose" : ""}</span>
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-slate-400">Maneuver {idx + 1} of {STEPS.length} · {saved} saved</span>
+            <span className={`rounded-full px-2 py-0.5 font-medium ${
+              mounted ? "bg-score-good/10 text-score-good"
+              : rec.status.mountState === "loose" ? "bg-score-bad/10 text-score-bad"
+              : "bg-slate-100 text-slate-400"}`}>
+              {mounted ? "mounted ✓" : rec.status.mountState === "loose" ? "⚠ phone loose" : "checking mount…"}
+            </span>
           </div>
           <div>
             <div className="text-lg font-bold text-slate-900">{step.title}</div>
