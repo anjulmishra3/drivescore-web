@@ -157,6 +157,64 @@ ax[2].set_title("Lateral accel (blue = confirmed lane changes)")
 plt.tight_layout(); plt.show()
 """)
 
+md("""## 6. Forward motion — braking & abrupt stops
+Calibrated longitudinal accel (+ = accelerating, - = braking) plus speed. We flag
+**hard-braking** events (sustained decel past a threshold) and **stops** (speed
+reaching ~0 after moving), and overlay your drive's tags. Cornering bleeds a
+little into this axis, so treat the numbers as observational.""")
+code("""def runs(mask):
+    idx = np.flatnonzero(mask)
+    if idx.size == 0: return []
+    return np.split(idx, np.flatnonzero(np.diff(idx) > 1) + 1)
+
+speed_kmh = spd * 3.6
+lon_s = pd.Series(lon_acc).rolling(12, center=True, min_periods=1).mean().to_numpy()  # ~0.5 s smooth
+BRAKE_TH = -2.0   # m/s^2 (~0.2 g); tweak to taste
+
+brakes = []
+for g in runs(lon_s < BRAKE_TH):
+    i0, i1 = g[0], g[-1]
+    brakes.append(dict(t_s=round(float(t[i0]),1), dur_s=round(float(t[i1]-t[i0]),1),
+                       peak_mps2=round(float(lon_s[g].min()),2),
+                       v_from=round(float(speed_kmh[i0]),0), v_to=round(float(speed_kmh[i1]),0)))
+brakes = pd.DataFrame(brakes)
+
+stops = []
+for g in runs(spd < 0.4):                       # ~1.4 km/h
+    if t[g[-1]]-t[g[0]] >= 1.0 and g[0] > 0 and spd[g[0]-1] > 1.5:
+        stops.append(round(float(t[g[0]]),1))
+
+print("hard-braking events:", len(brakes))
+if len(brakes): print(brakes.to_string(index=False))
+print("stops (s):", stops)
+""")
+code("""colors = {"turn":"green","lane_change":"blue","hard_brake":"orange","stop":"brown","harsh_corner":"purple"}
+fig, ax = plt.subplots(2, 1, figsize=(13, 7), sharex=True)
+
+ax[0].plot(t, speed_kmh, lw=0.8, color="k")
+for ts in stops: ax[0].axvline(ts, color="red", alpha=0.6)
+ax[0].set_ylabel("km/h"); ax[0].set_title("Speed  (red = stop)")
+
+ax[1].plot(t, lon_s, lw=0.7, color="k")
+ax[1].fill_between(t, lon_s, 0, where=(lon_s < 0), color="red", alpha=0.2)      # braking
+ax[1].fill_between(t, lon_s, 0, where=(lon_s > 0), color="green", alpha=0.15)   # accelerating
+ax[1].axhline(BRAKE_TH, color="red", ls="--", lw=0.8)
+for _, e in brakes.iterrows(): ax[1].axvline(e.t_s, color="darkred", alpha=0.5)
+ax[1].set_ylim(-5, 3); ax[1].set_ylabel("m/s^2")
+ax[1].set_title("Longitudinal accel  (+ accelerate / - brake; dark red = hard-brake event)")
+ax[1].set_xlabel("time (s)")
+
+# tags from the drive, colored by type (both panels)
+seen = set()
+for _, L in labels.iterrows():
+    c = colors.get(L.type, "gray")
+    lbl = L.type if L.type not in seen else None; seen.add(L.type)
+    for a in ax: a.axvline(L.t_ms/1000.0, color=c, alpha=0.18)
+    if lbl: ax[0].plot([], [], color=c, label=lbl)
+ax[0].legend(loc="upper right", fontsize=8, title="tags")
+plt.tight_layout(); plt.show()
+""")
+
 md("""## Notes
 - **Fixed-mount assumption:** we use one constant gravity/forward estimate for the
   whole drive. If the phone shifts mid-drive, redo per-segment, or replace the
