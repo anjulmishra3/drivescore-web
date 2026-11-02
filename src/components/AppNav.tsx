@@ -5,7 +5,7 @@ const links = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/record", label: "Record trip" },
   { href: "/trips", label: "Trips" },
-  { href: "/calibrate", label: "Calibrate" },
+  { href: "/train", label: "Calibrate" },
   { href: "/settings", label: "Settings" },
 ];
 

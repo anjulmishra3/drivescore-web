@@ -41,6 +41,7 @@ export default async function DashboardPage() {
     .from("trips")
     .select("*")
     .eq("status", "completed")
+    .neq("source", "calibration")
     .order("started_at", { ascending: false })
     .limit(50);
 

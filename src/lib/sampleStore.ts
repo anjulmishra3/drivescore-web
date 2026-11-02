@@ -43,7 +43,8 @@ export interface StoredLabel {
   clientId: string;
   tripId: string;
   t_ms: number;
-  source: "auto" | "manual";
+  t_end_ms?: number | null;   // maneuver window end (calibration labels)
+  source: "auto" | "manual" | "calibration";
   type: string | null;
   direction: "L" | "R" | null;
   confirmed: boolean | null;

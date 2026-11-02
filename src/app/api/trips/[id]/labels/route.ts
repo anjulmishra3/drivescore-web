@@ -34,7 +34,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   let b: {
-    t_ms?: number; source?: "auto" | "manual"; type?: string;
+    t_ms?: number; t_end_ms?: number | null; source?: "auto" | "manual" | "calibration"; type?: string;
     direction?: "L" | "R" | null; confirmed?: boolean | null;
     value?: number | null;
     lat?: number | null; lng?: number | null; speed_kmh?: number | null;
@@ -42,7 +42,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   };
   try { b = await req.json(); } catch { return NextResponse.json({ error: "invalid json" }, { status: 400 }); }
 
-  if (b.t_ms == null || (b.source !== "auto" && b.source !== "manual")) {
+  if (b.t_ms == null || !["auto", "manual", "calibration"].includes(b.source ?? "")) {
     return NextResponse.json({ error: "t_ms and source required" }, { status: 400 });
   }
 
@@ -52,6 +52,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       trip_id: params.id,
       user_id: user.id,
       t_ms: Math.round(b.t_ms),
+      t_end_ms: b.t_end_ms == null ? null : Math.round(b.t_end_ms),
       source: b.source,
       type: b.type ?? null,
       direction: b.direction ?? null,

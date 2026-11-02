@@ -11,6 +11,7 @@ export default async function TripsPage() {
   const { data: trips = [] } = await supabase
     .from("trips")
     .select("*")
+    .neq("source", "calibration")
     .order("started_at", { ascending: false });
 
   const list = (trips ?? []) as Trip[];

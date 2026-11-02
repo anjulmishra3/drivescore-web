@@ -260,7 +260,7 @@ export function useRoadTripRecorder(hz = 25) {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
-                t_ms: rec.t_ms, source: rec.source, type: rec.type, direction: rec.direction,
+                t_ms: rec.t_ms, t_end_ms: rec.t_end_ms ?? null, source: rec.source, type: rec.type, direction: rec.direction,
                 confirmed: rec.confirmed, lat: rec.lat, lng: rec.lng, speed_kmh: rec.speed_kmh, meta: rec.meta,
               }),
             });
@@ -328,6 +328,27 @@ export function useRoadTripRecorder(hz = 25) {
     });
     setLabelCount((n) => n + 1);
     setRecentLabels((r) => [{ id: clientId, t_ms, source: "manual" as const, type, direction, confirmed: null }, ...r].slice(0, 8));
+  }, [logLabelLocal]);
+
+  // current time into the trip (ms) — for marking calibration windows precisely
+  const tripTimeMs = useCallback(() => Date.now() - startMsRef.current, []);
+
+  // guided-calibration window label: a deliberately-performed maneuver with a
+  // precise start/end, intensity, and clean/redo flag. Durable like other labels.
+  const logCalibration = useCallback((e: {
+    type: ManeuverLabelType; direction?: "L" | "R" | null;
+    tStart: number; tEnd: number; intensity: "gentle" | "normal" | "hard"; clean: boolean; note?: string;
+  }) => {
+    const tripId = tripIdRef.current;
+    if (!tripId) return;
+    const l = latest.current;
+    logLabelLocal({
+      clientId: crypto.randomUUID(), tripId, t_ms: Math.round(e.tStart), t_end_ms: Math.round(e.tEnd),
+      source: "calibration", type: e.type, direction: e.direction ?? null, confirmed: e.clean,
+      lat: l.lat ?? null, lng: l.lng ?? null, speed_kmh: l.speed_kmh ?? null,
+      meta: { calibration: true, intensity: e.intensity, note: e.note || null },
+    });
+    setLabelCount((n) => n + 1);
   }, [logLabelLocal]);
 
   // answer a prompt (yes/no, optional direction for lane changes) → edit locally + sync
@@ -675,6 +696,7 @@ export function useRoadTripRecorder(hz = 25) {
 
   return {
     status, start, finish, resume, discardRecovery, finalizeRecovered, retryFinalize,
+    tripTimeMs, logCalibration,
     labels: {
       pending: pendingPrompt,
       recent: recentLabels,
