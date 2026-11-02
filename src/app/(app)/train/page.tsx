@@ -38,18 +38,23 @@ export default function TrainPage() {
   const step = STEPS[idx];
   const mounted = rec.status.mountState === "mounted";
 
+  // NOTE: `rec` is a fresh object every render and the recorder re-renders this
+  // page ~2x/sec, so these effects must NOT depend on `rec` or the timers get
+  // cleared before they fire (countdown would stick). tripTimeMs is stable.
   useEffect(() => {
     if (phase !== "countdown") return;
     if (count <= 0) { setTStart(rec.tripTimeMs()); setElapsed(0); setPhase("recording"); return; }
     const id = setTimeout(() => setCount((c) => c - 1), 800);
     return () => clearTimeout(id);
-  }, [phase, count, rec]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, count]);
 
   useEffect(() => {
     if (phase !== "recording") return;
     const id = setInterval(() => setElapsed(rec.tripTimeMs() - tStart), 100);
     return () => clearInterval(id);
-  }, [phase, tStart, rec]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, tStart]);
 
   async function begin() { await rec.start("calibration"); setIdx(0); setPhase("ready"); }
   function startManeuver() { setCount(3); setPhase("countdown"); }
