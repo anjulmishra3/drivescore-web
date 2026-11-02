@@ -17,6 +17,7 @@ export interface RoadMatch {
   offset_m: number;   // signed perpendicular distance (right of travel +, left −)
   dist_m: number;     // unsigned distance to the centerline
   ref: string | null; name: string | null; fclass: string;
+  oneway: string | null; // OSM oneway: 'F'/'T' = one-way carriageway (lane changes possible), 'B' = two-way
 }
 
 const DB_NAME = "drivescore-map";
@@ -159,7 +160,7 @@ export function nearestRoad(lat: number, lng: number): RoadMatch | null {
       if (d < bestD) {
         bestD = d;
         const cross = vx * (py - ay) - vy * (px - ax); // >0 => point is left of travel
-        best = { offset_m: cross >= 0 ? -d : d, dist_m: d, ref: r.ref, name: r.name, fclass: r.fclass };
+        best = { offset_m: cross >= 0 ? -d : d, dist_m: d, ref: r.ref, name: r.name, fclass: r.fclass, oneway: r.oneway };
       }
     }
   }

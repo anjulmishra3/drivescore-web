@@ -18,7 +18,7 @@ export interface LcSample {
   lat: number | null; lng: number | null; speed_kmh: number | null;
   accel_x: number | null; accel_y: number | null; accel_z: number | null;
 }
-type MatchFn = (lat: number, lng: number) => { offset_m: number } | null;
+type MatchFn = (lat: number, lng: number) => { offset_m: number; oneway: string | null } | null;
 
 const GRAV_ALPHA = 0.04;      // gravity EMA (~1s at 25 Hz)
 const HMAG_SMOOTH_N = 12;     // ~0.5 s horizontal-accel smoothing
@@ -30,7 +30,7 @@ const STEP_M = 1.5;           // min signed offset step to confirm a lane change
 const EMIT_COOLDOWN_MS = 4000;// min gap between emitted lane changes
 const RING_MS = 9000;         // offset history kept
 
-interface OffPt { t: number; off: number; lat: number; lng: number }
+interface OffPt { t: number; off: number; lat: number; lng: number; oneway: boolean }
 
 export class LiveLaneChangeDetector {
   private gx: number | null = null; private gy = 0; private gz = 0;
@@ -78,7 +78,7 @@ export class LiveLaneChangeDetector {
     if (s.lat != null && s.lng != null && (s.lat !== this.lastLat || s.lng !== this.lastLng)) {
       this.lastLat = s.lat; this.lastLng = s.lng;
       const m = this.match(s.lat, s.lng);
-      if (m) this.offs.push({ t: s.t_ms, off: m.offset_m, lat: s.lat, lng: s.lng });
+      if (m) this.offs.push({ t: s.t_ms, off: m.offset_m, lat: s.lat, lng: s.lng, oneway: m.oneway === "F" || m.oneway === "T" });
       while (this.offs.length && s.t_ms - this.offs[0].t > RING_MS) this.offs.shift();
     }
 
@@ -92,9 +92,10 @@ export class LiveLaneChangeDetector {
       if (before == null || after == null) continue;
       const step = after - before;
       if (Math.abs(step) < STEP_M) continue;               // offset didn't confirm
+      const at = this.nearest(p.t);
+      if (!at?.oneway) continue;                            // road context: one-way carriageway only
       if (p.t - this.lastEmit <= EMIT_COOLDOWN_MS) continue;
       this.lastEmit = p.t;
-      const at = this.nearest(p.t);
       this.onEvent({
         type: "lane_change",
         t_ms: p.t,
