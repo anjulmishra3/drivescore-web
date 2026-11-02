@@ -15,12 +15,12 @@ const G = 9.81; // m/s^2
 // thresholds (in g) above which an event counts as harsh
 const HARSH_ACCEL_G = 0.30;
 const HARSH_BRAKE_G = 0.35;
-const HARSH_CORNER_G = 0.35;
-// Lateral g = v²/(r·g), so a flat g threshold flags normal highway bends. Count a
-// corner only when it's genuinely tight (radius below this) OR the lateral force
-// is extreme regardless. Calibrated on reviewed highway-curve false positives.
-const HARSH_CORNER_R_M = 60;
-const EXTREME_CORNER_G = 0.55;
+// Calibrated against 20 confirmed (normal) turns across 3 city drives: normal
+// cornering peaks ~0.3 g median, up to ~0.48 g, so a 0.35 g threshold penalised
+// ordinary turns. 0.5 g sits just above the normal range — a genuinely firm
+// corner — and (being below it) also excludes the gentle highway sweeps the old
+// radius guard targeted, so no radius term is needed.
+const HARSH_CORNER_G = 0.5;
 const SPEED_LIMIT_KMH = 120; // coarse fallback; real limits need map data (v1+)
 // GPS occasionally reports a wildly wrong fix, producing a huge position jump
 // (seen: an 811,000 km "trip"). Speeds above this are treated as a bad fix.
@@ -151,9 +151,7 @@ export function scoreTrip(samples: TripSample[]): ScoreBreakdown {
       gz += GRAV_ALPHA * (cur.accel_z - gz);
       const lx = cur.accel_x - gx, ly = cur.accel_y - gy;
       const lateral = Math.sqrt(lx ** 2 + ly ** 2) / G;
-      const cornerR = lateral > 0.05 ? (((sp ?? 0) / 3.6) ** 2) / (lateral * G) : 1e9;
-      if ((sp ?? 0) >= CORNER_MIN_KMH && cur.t_ms - lastCornerT > DEBOUNCE_MS
-          && ((lateral > HARSH_CORNER_G && cornerR < HARSH_CORNER_R_M) || lateral > EXTREME_CORNER_G)) {
+      if ((sp ?? 0) >= CORNER_MIN_KMH && lateral > HARSH_CORNER_G && cur.t_ms - lastCornerT > DEBOUNCE_MS) {
         harshCorner++; lastCornerT = cur.t_ms;
       }
 
