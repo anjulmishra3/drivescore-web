@@ -31,6 +31,7 @@ export interface TripMeta {
   status: "recording" | "finishing" | "pending_finalize" | "completed";
   score?: ScoreBreakdown; // client-computed score, stored so a background finalize can POST it
   endedAt?: string;
+  mountFraction?: number | null; // fraction of the drive the phone read as mounted
 }
 
 // A maneuver label, stored on-device FIRST (same durability contract as samples).

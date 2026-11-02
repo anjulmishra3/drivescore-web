@@ -522,12 +522,13 @@ export function useRoadTripRecorder(hz = 25) {
       await flushLabels(tripId);
       if ((await getPendingLabels(tripId)).length === 0) break;
     }
-    // finalize on the server
+    // finalize on the server (include the per-trip mount fraction, stored in meta)
+    const meta = await getMeta(tripId);
     try {
       const res = await fetchWithTimeout(`/api/trips/${tripId}/finish`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ score }),
+        body: JSON.stringify({ score, mount_fraction: meta?.mountFraction ?? null }),
       });
       if (!res.ok) return false;
     } catch {
@@ -565,6 +566,7 @@ export function useRoadTripRecorder(hz = 25) {
   // dead-signal spot ends the trip instantly; it finalizes itself once online.
   const finish = useCallback(async () => {
     patch({ state: "finishing" });
+    const mount = mountRef.current?.summary() ?? null; // capture before stopTimers nulls it
     stopTimers();
     // move any remaining in-memory samples to IndexedDB
     if (memBuf.current.length) {
@@ -586,6 +588,7 @@ export function useRoadTripRecorder(hz = 25) {
       tripId, source: sourceRef.current,
       startedAt: prev?.startedAt ?? new Date(startMsRef.current).toISOString(),
       lastSeq: seqRef.current, status: "pending_finalize", score, endedAt: new Date().toISOString(),
+      mountFraction: mount?.fraction ?? null,
     });
 
     const remaining = await countUnsynced(tripId);

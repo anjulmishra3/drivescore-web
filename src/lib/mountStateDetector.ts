@@ -35,6 +35,7 @@ export class MountStateDetector {
   private tumbleS = 0; private jitterS = 0;
   private haveGyro = false; private n = 0;
   private _state: MountState = "uncertain";
+  private total = 0; private mountedCount = 0; // for the per-trip summary
 
   push(s: MountSample) {
     const { accel_x: ax, accel_y: ay, accel_z: az } = s;
@@ -73,9 +74,16 @@ export class MountStateDetector {
     if (looksMounted) this._state = "mounted";
     else if (looksLoose) this._state = "loose";
     // else: keep current state (hysteresis band)
+
+    this.total++;
+    if (this._state === "mounted") this.mountedCount++;
   }
 
   get state(): MountState { return this._state; }
+  // per-trip summary: fraction of (post-warmup) samples that read as mounted
+  summary(): { fraction: number | null; n: number } {
+    return { fraction: this.total ? this.mountedCount / this.total : null, n: this.total };
+  }
   // exposed for tuning/telemetry
   get signals() { return { tumble: Math.round(this.tumbleS * 10) / 10, jitter: Math.round(this.jitterS * 100) / 100 }; }
 }

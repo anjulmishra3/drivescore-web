@@ -15,7 +15,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  let body: { score?: Partial<ScoreBreakdown> };
+  let body: { score?: Partial<ScoreBreakdown>; mount_fraction?: number | null };
   try {
     body = await req.json();
   } catch {
@@ -41,6 +41,10 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       score_speeding: clamp(s.score_speeding),
       score_focus: clamp(s.score_focus),
       event_count: s.event_count ?? 0,
+      mount_fraction:
+        typeof body.mount_fraction === "number"
+          ? Math.max(0, Math.min(1, body.mount_fraction))
+          : null,
     })
     .eq("id", params.id)
     .eq("user_id", user.id)
