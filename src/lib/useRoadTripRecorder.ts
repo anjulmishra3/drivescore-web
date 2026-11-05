@@ -13,6 +13,7 @@ import {
   deleteTrip,
   getActiveTrip,
   getAllForScoring,
+  getAllPendingLabels,
   getLabelLocal,
   getMeta,
   getPendingFinalizeTrips,
@@ -255,13 +256,20 @@ export function useRoadTripRecorder(hz = 25) {
             }
             await removeLabelLocal(rec.clientId);
           } else if (!rec.serverId) {
+            // Calibration labels upload as source='manual' (always accepted) with the
+            // calibration marker + window end folded into meta, so an older server or
+            // a stuck record still syncs. They're identified by meta.calibration.
+            const isCalib = rec.source === "calibration";
+            const create = isCalib
+              ? { source: "manual" as const, meta: { ...(rec.meta ?? {}), calibration: true, t_end_ms: rec.t_end_ms ?? null } }
+              : { source: rec.source, meta: rec.meta };
             // create (carries the current confirmed/direction in one shot)
             const res = await fetchWithTimeout(`/api/trips/${id}/labels`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
-                t_ms: rec.t_ms, t_end_ms: rec.t_end_ms ?? null, source: rec.source, type: rec.type, direction: rec.direction,
-                confirmed: rec.confirmed, lat: rec.lat, lng: rec.lng, speed_kmh: rec.speed_kmh, meta: rec.meta,
+                t_ms: rec.t_ms, t_end_ms: rec.t_end_ms ?? null, source: create.source, type: rec.type, direction: rec.direction,
+                confirmed: rec.confirmed, lat: rec.lat, lng: rec.lng, speed_kmh: rec.speed_kmh, meta: create.meta,
               }),
             });
             if (!res.ok) continue;
@@ -289,6 +297,16 @@ export function useRoadTripRecorder(hz = 25) {
     const full: StoredLabel = { ...rec, deleted: 0, serverId: null, synced: 0 };
     void putLabelLocal(full).then(() => flushLabels());
     return full.clientId;
+  }, [flushLabels]);
+
+  // Flush unsynced labels for EVERY trip, not just the active/finalizing one — so
+  // labels orphaned when their trip finalized before uploading (weak signal) get
+  // recovered on the next app open / reconnect.
+  const flushOrphanLabels = useCallback(async () => {
+    if (!navigator.onLine) return;
+    const pending = await getAllPendingLabels();
+    const trips = Array.from(new Set(pending.map((l) => l.tripId)));
+    for (const tid of trips) await flushLabels(tid);
   }, [flushLabels]);
 
   // auto-detected maneuver → log it, and (for lane changes) raise a quick prompt
@@ -678,8 +696,9 @@ export function useRoadTripRecorder(hz = 25) {
     getPendingFinalizeTrips().then((ms) => {
       if (ms.length) { patch({ pendingFinalize: true }); void finalizePending(); startFinalizeRetry(); }
     }).catch(() => {});
+    void flushOrphanLabels(); // recover any labels stranded from a past trip
     const onVis = () => { if (document.visibilityState === "visible" && status.state === "recording") acquireWake(); };
-    const onOnline = () => { patch({ online: true }); flush(); void flushLabels(); void finalizePending(); };
+    const onOnline = () => { patch({ online: true }); flush(); void flushLabels(); void flushOrphanLabels(); void finalizePending(); };
     const onOffline = () => patch({ online: false });
     document.addEventListener("visibilitychange", onVis);
     window.addEventListener("online", onOnline);

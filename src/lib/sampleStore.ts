@@ -187,6 +187,14 @@ export async function getPendingLabels(tripId: string): Promise<StoredLabel[]> {
   return reqDone(index.getAll(IDBKeyRange.only([tripId, 0]))) as Promise<StoredLabel[]>;
 }
 
+// Every unsynced label across all trips (for recovering labels orphaned when a
+// trip finalized before they uploaded — e.g. a weak-signal calibration drive).
+export async function getAllPendingLabels(): Promise<StoredLabel[]> {
+  const db = await openDB();
+  const all = (await reqDone(tx(db, "labels", "readonly").getAll())) as StoredLabel[];
+  return all.filter((l) => l.synced === 0);
+}
+
 export async function removeLabelLocal(clientId: string): Promise<void> {
   const db = await openDB();
   await reqDone(tx(db, "labels", "readwrite").delete(clientId));
