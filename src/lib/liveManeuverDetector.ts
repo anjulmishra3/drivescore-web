@@ -51,9 +51,11 @@ const MIN_LC_S = 0.8;
 // back-to-back lane changes (common when deliberately weaving on a highway) into
 // one detection; 1.2 s lets consecutive ones register.
 const LC_COOLDOWN_MS = 1200;
+const BIAS_ALPHA = 0.002;   // very slow EMA (~tens of seconds) for the gyro yaw bias
 
 export class LiveManeuverDetector {
   private gx: number | null = null; private gy = 0; private gz = 0;
+  private yawBias = 0;       // resting gyro offset on the yaw axis, estimated live
   private ring: number[] = []; private ringSum = 0;
   private lastT: number | null = null;
   private cur: Lobe | null = null;
@@ -86,18 +88,26 @@ export class LiveManeuverDetector {
     this.lastT = s.t_ms;
 
     const spd = s.speed_kmh ?? 0;
-    const active = spd >= FORM_MIN_KMH && Math.abs(yaw) > TH;
+
+    // Remove the gyro's resting bias: learn it slowly while stopped or going
+    // straight (not mid-turn), then subtract. Without this, the bias integrates
+    // into the net-heading over a lobe and corrupts lane-change/turn detection.
+    if (spd < FORM_MIN_KMH || Math.abs(yaw - this.yawBias) < 1.5) {
+      this.yawBias += BIAS_ALPHA * (yaw - this.yawBias);
+    }
+    const yawC = yaw - this.yawBias;
+    const active = spd >= FORM_MIN_KMH && Math.abs(yawC) > TH;
 
     if (active) {
       this.belowSince = null;
-      const sgn = Math.sign(yaw);
+      const sgn = Math.sign(yawC);
       if (!this.cur || this.cur.sign !== sgn) {
         if (this.cur) this.closeLobe(s);          // sign flipped → close & start new
         this.cur = { sign: sgn, net: 0, peak: 0, peakSpeed: spd, startT: s.t_ms, endT: s.t_ms,
                      speed: s.speed_kmh, lat: s.lat, lng: s.lng };
       }
-      this.cur.net += yaw * dt;
-      this.cur.peak = Math.max(this.cur.peak, Math.abs(yaw));
+      this.cur.net += yawC * dt;
+      this.cur.peak = Math.max(this.cur.peak, Math.abs(yawC));
       this.cur.peakSpeed = Math.max(this.cur.peakSpeed, spd);
       this.cur.endT = s.t_ms;
       this.cur.speed = s.speed_kmh;
